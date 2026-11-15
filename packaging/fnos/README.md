@@ -100,6 +100,7 @@ Strata 首次使用要下载几十 GB 的模型。向导里可选：
 - **卸载必须在飞牛网页里做**（`appcenter-cli uninstall` 会拒绝）；`appcenter-cli install-fpk` 对已安装的同名应用会直接跳过，**升级也要在网页里做**。所以“升级路径”和“卸载向导”**没有实测**。
 - **安装失败 `10234 … acl_get_file failed`**：飞牛安装时以 root 遍历应用目录，悬空 / 绝对 / 指到应用目录外的符号链接会让它失败。`build.sh` 在打包前检查这三类链接，有就直接报错。
 - 第一次 `appcenter-cli start` 返回过一次 `Failed to launch app. error code 10500`，但应用中心日志里这次启动是 `success`，应用也确实起来了，之后的 start / stop 都正常；原因没查清。
+- **不在线更新程序**：引擎、Control、DeepSeek 引擎都随 fpk 走（`launch.sh` 设 `STRATA_FPK_NO_UPDATES=1`，`patches/0002-no-online-updates.patch`）。设置里没有“更新引擎 / 更新 Strata”，“检查更新”返回“请安装更新的 fpk”，更新操作会被拒绝。**模型、读图文件、DFlash2 草稿模型照常下载**（它们是数据，不是程序）。从本地文件安装引擎（离线、手动）仍然可以。实测：关掉后装模型、加载、推理都正常。
 - 宿主第一次启动会把 `engine-bundle` 里的引擎复制到应用数据的 `components/`，之后会删掉安装目录里的那份（日志有说明），所以占用的是应用数据里的 1.2 GB。
 - **图片要在模型准备时开启**：模型当初没开图片就装了的话，之后加载时开图片不会自动补文件（服务端会报 “started without the vision encoder”）。在界面里带图片重新准备一次这个模型即可，只补下读图文件（约 1 GB），不会重下模型本体。
 - **DeepSeek V4.1 的模型没有实测**（最小的也要 190 GB 以上）；引擎已在飞牛上验证（见下）。它会把放不进内存的部分从硬盘读，模型放在机械硬盘上会很慢。
@@ -127,6 +128,7 @@ Strata 首次使用要下载几十 GB 的模型。向导里可选：
 | `gfx906/patches/0001-hip-compat-stream-priority.patch` | 引擎源码 | gfx906 兼容层缺 `cudaStreamCreateWithPriority`、`cudaDeviceGetStreamPriorityRange` 的映射，`src/core/dflash2.cpp` 编不过；补两行 `#define`。上游到现在的 HEAD 也没补 |
 | `patches/control/0001-gfx906-opt-in-and-backend.patch` | Control 的 `setup.py` | ① 加开关 `STRATA_EXPERIMENTAL_GFX906=1`（照上游 gfx1103 / gfx1150 的写法），把 gfx906 加进 AMD 支持名单；② 安装时没指定后端就用 `STRATA_ENGINE_BACKEND`，否则同时有 NVIDIA 卡的机器会默认装成 CUDA |
 | `patches/0001-gpu-vendor.patch` | 宿主 | 只保留本变体厂商的卡（两个变体共用） |
+| `patches/0002-no-online-updates.patch` | 宿主 | 关掉引擎 / Control 的在线更新（两个变体共用） |
 
 `launch.sh` 按 `bin/variant.env`（构建时写入）设置：gfx906 版 `STRATA_FPK_GPU_VENDOR=amd`、`STRATA_ENGINE_BACKEND=hip`、`STRATA_EXPERIMENTAL_GFX906=1`，不链接任何宿主机的库。
 
@@ -171,7 +173,7 @@ packaging/fnos/tests/test_proxy.sh   # 不需要 GPU / 飞牛：认证代理的 
 ```
 build.sh                  构建脚本（VARIANT=cuda|gfx906）
 gfx906/                   gfx906 引擎的构建：build-engine-docker.sh（宿主侧）、build-engine.sh（容器里）、patches/（引擎源码补丁）
-patches/                  宿主补丁（0001-gpu-vendor.patch）；patches/control/ 是 Control 的补丁
+patches/                  宿主补丁（0001-gpu-vendor、0002-no-online-updates）；patches/control/ 是 Control 的补丁
 fnos/                     fpk 骨架（@APPNAME@ 等占位符由 build.sh 替换）
 ├── manifest, config/     应用清单；privilege（应用用户 strata + video/render 组）、resource（共享文件夹、防火墙）
 ├── cmd/                  生命周期脚本（start/stop/status、安装/配置/升级/卸载回调）

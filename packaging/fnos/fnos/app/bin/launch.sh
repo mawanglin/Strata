@@ -91,6 +91,9 @@ export STRATA_PACKAGED=1 STRATA_REAL_ENGINE=1 STRATA_NO_ACQUIRE=1 STRATA_NO_REPA
 # 这个包只带一种引擎：别的厂商的卡（同一台机器上的另一块显卡）不参与硬件识别和模型规划
 # （packaging/fnos/patches/0001-gpu-vendor.patch），Control 也只选这一种后端。
 export STRATA_FPK_GPU_VENDOR STRATA_ENGINE_BACKEND="${STRATA_FPK_ENGINE_BACKEND}"
+# 引擎、Control、DeepSeek 引擎都随 fpk 走，不在线更新（packaging/fnos/patches/0002-no-online-updates.patch）。
+# 模型、读图文件、DFlash2 草稿模型照常下载（它们不是程序）。
+export STRATA_FPK_NO_UPDATES=1
 # gfx906（MI50 / MI60 / Radeon VII）不在上游 Control 的 AMD 支持名单里：本包的 Control 补丁加了这个开关
 # （packaging/fnos/patches/control/0001-gfx906-opt-in-and-backend.patch）。
 [ "${STRATA_FPK_VARIANT}" = gfx906 ] && export STRATA_EXPERIMENTAL_GFX906=1

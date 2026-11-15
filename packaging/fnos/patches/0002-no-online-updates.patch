@@ -1,0 +1,26 @@
+--- a/server/index.mjs	2026-11-15 18:41:33.264694690 +0800
++++ b/server/index.mjs	2026-11-15 18:41:33.600707078 +0800
+@@ -128,6 +128,10 @@
+ /* The installed app ships Strata Control (python + strata_control) next to the host; a source checkout has none and keeps its older paths. */
+ const CONTROL = findControl();
+ const control = createControl({ control: CONTROL });
++/* fnOS package: the engine, Control and the DeepSeek engine come with the .fpk (STRATA_FPK_NO_UPDATES=1). Without update / updateCheck the
++   Settings screen offers no component update (capabilities.componentUpdates is false), an update-engine / update-strata operation is
++   refused, and nothing reaches the update feed for them; a newer version is a newer .fpk installed in the fnOS App Center. */
++if (control && process.env.STRATA_FPK_NO_UPDATES === '1') { delete control.update; delete control.updateCheck; }
+ // Files a run as administrator made in Strata's own folders (owner Administrators) are given back to the user at every start; best effort, never blocks.
+ if (control && process.platform === 'win32' && !process.env.STRATA_NO_REPAIR_ACCESS) void control.repairAccess().catch(() => {});
+ /* Which window shows the page (the app window or, when that cannot run, a browser tab) and what only the app window can do: app-ui.mjs. */
+@@ -1428,6 +1432,12 @@
+     await pipeline(req, createWriteStream(target, { mode: 0o600 }));
+     return json(res, 202, native.operation('install-engine-file', { path: target }));
+   }
++  if (path === '/api/updates/check' && method === 'GET' && process.env.STRATA_FPK_NO_UPDATES === '1') {
++    const message = 'Updates come with the fnOS package: install a newer Strata .fpk in the fnOS App Center.';
++    return json(res, 200, { checkedAt: new Date().toISOString(),
++      strata: { installedVersion: process.env.STRATA_APP_VERSION || null, status: 'unavailable', canInstall: false, message },
++      engine: { installedVersion: null, status: 'unavailable', canInstall: false, message } });
++  }
+   if (path === '/api/updates/check' && method === 'GET' && control?.updateCheck) return json(res, 200, await checkComponentUpdates({ control, appUpdater, appVersion: process.env.STRATA_APP_VERSION || null }));
+   if (path === '/api/updates/check' && method === 'GET') return json(res, 200, await checkUpdates({ appVersion:appVersionToShow(setupState().app.version,native.state().version), engineVersion:native.state().available?(native.state().installed?.engine?.version??null):(await engine.config()).engine.version }));
+ 
