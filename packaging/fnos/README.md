@@ -11,6 +11,8 @@
 
 下面先讲 CUDA 版；两者共用同一套脚本、界面、认证代理和向导，只有引擎和显卡相关的部分不同。
 
+两个应用的**图标不一样**（`tools/make_icon.py`，构建时生成）：Strata 图标中间那条横杠换成厂商的标志色，下方写厂商名，NVIDIA 版是绿色 “NVIDIA”，gfx906 版是红色 “AMD”，飞牛桌面上一眼能分清。
+
 ## 包里有什么、没有什么
 
 | | 来源 | 在不在包里 |
@@ -140,7 +142,7 @@ sudo /var/apps/strata/target/bin/strata --help
 - **不在线更新程序**：引擎、Control、DeepSeek 引擎都随 fpk 走（`launch.sh` 设 `STRATA_FPK_NO_UPDATES=1`，`patches/0002-no-online-updates.patch`）。设置里没有“更新引擎 / 更新 Strata”，“检查更新”返回“请安装更新的 fpk”，更新操作会被拒绝。**模型、读图文件、DFlash2 草稿模型照常下载**（它们是数据，不是程序）。从本地文件安装引擎（离线、手动）仍然可以。实测：关掉后装模型、加载、推理都正常。
 - 宿主第一次启动会把 `engine-bundle` 里的引擎复制到应用数据的 `components/`，之后会删掉安装目录里的那份（日志有说明），所以占用的是应用数据里的 1.2 GB。
 - **图片要在模型准备时开启**：模型当初没开图片就装了的话，之后加载时开图片不会自动补文件（服务端会报 “started without the vision encoder”）。在界面里带图片重新准备一次这个模型即可，只补下读图文件（约 1 GB），不会重下模型本体。
-- **DeepSeek V4.1 的模型没有实测**（最小的也要 190 GB 以上）；引擎已在飞牛上验证（见下）。它会把放不进内存的部分从硬盘读：这台 NAS 的存储池是 8 块 12 TB 机械硬盘的 RAIDZ3（2 块 1 TB NVMe 做 L2ARC 读缓存，已用 85%），上游的速度数字是在 NVMe SSD 上测的，放在这个池里多半慢很多。
+- **DeepSeek V4.1 能跑，但在机械硬盘池上很慢**。2026-11-15 实测：ISTA-DAS-Coder（190.7 GB，最小的一套），hf-mirror.com 下载加两轮校验 44 分钟，放在共享模型库（8 块 12 TB 机械硬盘的 RAIDZ3，2 块 1 TB NVMe 做 L2ARC 读缓存）；RTX 3060 上 60 秒加载完；写 `is_prime` 两次都正确，第一次 121 秒 / 245 token（约 **2.3 tok/s**），第二次 66 秒 / 204 token（约 **3.2 tok/s**）。上游在 RTX 3060 + NVMe SSD 上是 9–11 tok/s：差在专家要从机械硬盘读。加载期间 NAS 内存用到 97 / 125 GB（可用只剩 27 GB），会挤到别的服务；想认真用 DeepSeek，把模型放到单独的 NVMe 上，用完记得卸载。
 - 防火墙服务文件（`.sc`）里写的是默认端口 47831；向导里改了端口又开着防火墙的话，要自己放行。
 - **没有实测**：向导在飞牛网页里的渲染、飞牛桌面图标（`"port": "${wizard_port}"` 的写法照搬了 1Panel / MoonTVPlus）、DeepSeek V4.1 的模型推理、Codex / OpenCode 等其他客户端（协议和 curl 测过的一样）。
 - 直连端口是明文 HTTP，只在可信局域网里用。
@@ -214,6 +216,7 @@ packaging/fnos/tests/test_models_dir.sh        # 模型目录的选择（授权�
 
 ```
 build.sh                  构建脚本（VARIANT=cuda|gfx906）
+tools/make_icon.py        两个变体的应用图标（厂商色 + 厂商名）
 gfx906/                   gfx906 引擎的构建：build-engine-docker.sh（宿主侧）、build-engine.sh（容器里）、patches/（引擎源码补丁）
 patches/                  宿主补丁（0001-gpu-vendor、0002-no-online-updates、0003-q36-context-fallback）；patches/control/ 是 Control 的补丁
 fnos/                     fpk 骨架（@APPNAME@ 等占位符由 build.sh 替换）

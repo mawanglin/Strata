@@ -192,12 +192,9 @@ cp -a "${HERE}/fnos/." "${PKG}/"
 # cp -a 会把 app/ 里的骨架文件合并进已有的 app/，不会覆盖上面放进去的东西
 mkdir -p "${PKG}/app/ui/images"
 ICON_SRC="${REPO}/apps/host/public/icon-512.png"
-"${PY}" -I -c "
-from PIL import Image
-im = Image.open('${ICON_SRC}').convert('RGBA')
-for size, dest in ((64, '${PKG}/ICON.PNG'), (256, '${PKG}/ICON_256.PNG'), (64, '${PKG}/app/ui/images/icon_64.png'), (256, '${PKG}/app/ui/images/icon_256.png')):
-    im.resize((size, size), Image.LANCZOS).save(dest)
-"
+# 两个变体的图标不一样：中间那条横杠换成厂商的标志色，下方写厂商名（tools/make_icon.py），飞牛桌面上一眼能分清。
+"${PY}" -I "${HERE}/tools/make_icon.py" "${ICON_SRC}" "${VARIANT}" "${PKG}/ICON.PNG" "${PKG}/ICON_256.PNG" \
+    "64:${PKG}/app/ui/images/icon_64.png" "256:${PKG}/app/ui/images/icon_256.png"
 chmod +x "${PKG}"/cmd/* "${PKG}"/app/bin/launch.sh "${PKG}"/app/bin/strata
 # 这个包是哪个变体：launch.sh 读它决定显卡厂商、引擎后端，以及要不要链接宿主机的 NVIDIA 驱动库。
 cat > "${PKG}/app/bin/variant.env" <<VENV
