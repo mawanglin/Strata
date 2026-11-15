@@ -200,6 +200,7 @@ fi
 PROXY_PORT="${PORT}" PROXY_UPSTREAM_PORT="${BACKEND_PORT}" PROXY_AUTH_FILE="${HOME_DIR}/.auth.json" \
     PROXY_API_KEY_FILE="${HOME_DIR}/.api-key.json" \
     PROXY_TLS="${STRATA_FPK_HTTPS:-off}" PROXY_TLS_DIR="${HOME_DIR}/tls" PROXY_TLS_USER_DIR="${SHARE}/tls" \
+    PROXY_HOST_STATE="${STRATA_HOME}/data/state.json" \
     "${NODE}" "${APPDEST}/bin/proxy.mjs" &
 CHILD_PIDS+=($!)
 log "web port ${PORT} -> Strata host 127.0.0.1:${BACKEND_PORT} (API key access: $([ -s "${HOME_DIR}/.api-key.json" ] && echo on || echo off))"

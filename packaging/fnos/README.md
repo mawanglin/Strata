@@ -56,7 +56,7 @@ ANTHROPIC_BASE_URL=http://NAS-IP:47831 ANTHROPIC_API_KEY=<Key> ANTHROPIC_MODEL=<
 ```
 
 - Key 只对 `/v1/...` 有效；带 Key 访问网页和 `/api` 会被拒（401），网页仍然只能用户名密码登录。错 Key 返回 401 的 JSON 错误（不会弹浏览器登录框）。
-- 认证由本包的代理做。**不要再在 Strata 网页设置里另设 API Key**：代理认完就把 Key 头去掉，宿主那边若另有 Key 会对不上。
+- 认证由本包的代理做，**程序只需要飞牛设置里的这个 Key**。Strata 网页里也能设一个 Key（Serving 页的 Local sharing / Cloudflare 用，存在 `home/strata/data/state.json` 的 `serving.apiKey`）：设了它，宿主会对 `/v1` 再校验一次，所以代理认证通过后会换上宿主的 Key 再转发，两边各设各的也不会对不上（`tests/test_proxy.sh` 有 5 项检查；改 Strata 网页里的 Key 不用重启）。2026-11-16 在 NAS 上实测：在 Strata 那一层设了 Key 后，绕过代理直接访问宿主是 401（宿主在校验），程序只用飞牛设置里的 Key 走代理（Bearer 和 x-api-key）都是 200，错的 Key 仍是 401。
 - Claude Code 不认识 Strata 的模型名，会提示 “assumes a context window of 1m tokens”，实际窗口是模型加载时的上下文（如 128K），长会话前按它提示的文档设一下窗口。
 - 明文 HTTP，同样只在可信局域网里用。
 
@@ -225,7 +225,7 @@ VARIANT=gfx906 ENGINE_COMPONENT=/path/to/work/out/components/engine/0.1.59-linux
 `build.sh` 需要 Node 24.12+、python3、curl、`fnpack`（`~/.local/bin/fnpack` 或 `FNPACK=`）、网络，每个变体的工作目录约 3 GB（`packaging/fnos/build/<变体>/`，下载缓存共用 `packaging/fnos/build/cache/`）。版本号形如 `0.2.13-cob.1`（上游 `0.2.13` + 本地小版本，符合 fork 规则）。换上游版本时同时改 `UPSTREAM_TAG`、`CONTROL_ASSET`、`ENGINE_ASSET`；校验值从该 release 的 `SHA256SUMS.txt` 自动取。
 
 ```bash
-packaging/fnos/tests/test_proxy.sh             # 认证代理（用户名密码、/v1 的 API Key、转发、流式、WebSocket、HTTPS），36 项
+packaging/fnos/tests/test_proxy.sh             # 认证代理（用户名密码、/v1 的 API Key、宿主自己的 Key、转发、流式、WebSocket、HTTPS），41 项
 packaging/fnos/tests/test_settings.sh          # 安装 / 设置向导的处理（“保持不变”），11 项
 packaging/fnos/tests/test_context_fallback.sh  # Qwen3.6 上下文自动降档的判断，11 项
 packaging/fnos/tests/test_models_dir.sh        # 模型目录的选择（授权目录），8 项

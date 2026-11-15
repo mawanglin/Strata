@@ -126,7 +126,7 @@
         "items": [
             {
                 "type": "tips",
-                "helpText": "给 Claude Code、Codex、OpenCode 等程序当本地模型后端用：它们访问 <b>http://NAS-IP:端口/v1</b>（OpenAI 兼容）或 <b>http://NAS-IP:端口</b>（Anthropic 兼容），用下面的 API Key 认证（放在 <b>Authorization: Bearer</b> 或 <b>x-api-key</b> 里）。只对 /v1 接口有效，网页仍然用用户名密码登录。也是明文 HTTP，只在可信局域网里用。不要再在 Strata 网页设置里另设 API Key，否则两边对不上。"
+                "helpText": "给 Claude Code、Codex、OpenCode 等程序当本地模型后端用：它们访问 <b>http://NAS-IP:端口/v1</b>（OpenAI 兼容）或 <b>http://NAS-IP:端口</b>（Anthropic 兼容），用下面的 API Key 认证（放在 <b>Authorization: Bearer</b> 或 <b>x-api-key</b> 里）。只对 /v1 接口有效，网页仍然用用户名密码登录。也是明文 HTTP，只在可信局域网里用。程序只需要这里设的 Key；Strata 网页里另设的 Key（服务页的本地共享 / Cloudflare 用）不影响这里。"
             },
             {
                 "type": "radio",

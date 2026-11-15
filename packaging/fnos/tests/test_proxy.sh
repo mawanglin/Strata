@@ -28,7 +28,9 @@ check "password file is 0600 and has no plaintext" '[ "$(stat -c %a "${T}/auth.j
 check "API key shorter than 16 is refused" '! printf "short\n" | node "${BIN}/set-api-key.mjs" "${T}/key.json" 2>/dev/null && [ ! -e "${T}/key.json" ]'
 printf 'sk-test_0123456789abcdef\n' | node "${BIN}/set-api-key.mjs" "${T}/key.json"
 check "API key file is 0600 and has no plaintext" '[ "$(stat -c %a "${T}/key.json")" = 600 ] && ! grep -q sk-test_0123456789abcdef "${T}/key.json"'
-PROXY_PORT=${PX} PROXY_UPSTREAM_PORT=${UP} PROXY_AUTH_FILE="${T}/auth.json" PROXY_API_KEY_FILE="${T}/key.json" node "${BIN}/proxy.mjs" > "${T}/proxy.log" 2>&1 &
+echo '{"serving":{"apiKey":null}}' > "${T}/state.json"
+PROXY_PORT=${PX} PROXY_UPSTREAM_PORT=${UP} PROXY_AUTH_FILE="${T}/auth.json" PROXY_API_KEY_FILE="${T}/key.json" PROXY_HOST_STATE="${T}/state.json" \
+    node "${BIN}/proxy.mjs" > "${T}/proxy.log" 2>&1 &
 for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:${PX}/" && break; sleep 0.1; done
 
 code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
@@ -54,6 +56,14 @@ node "${BIN}/set-api-key.mjs" "${T}/key.json" --clear
 check "API: key access off -> key refused"    '[ "$(code -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/v1/models)" = 401 ]'
 printf '%s\n' "${K}" | node "${BIN}/set-api-key.mjs" "${T}/key.json"
 check "API: key turned on again without restart" '[ "$(code -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/v1/models)" = 200 ]'
+# Strata 网页里也设了自己的 Key（state.json 的 serving.apiKey）：/v1 转发时换上它，两边各设各的也对得上
+sleep 0.05; echo '{"serving":{"apiKey":"sk-strata-host-secret"}}' > "${T}/state.json"
+check "host key set: /v1 with our key -> host gets its own key" '[ "$(curl -s -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/v1/models | grep -o "\"auth\":\"[^\"]*\"")" = "\"auth\":\"Bearer sk-strata-host-secret\"" ]'
+check "host key set: /v1 with Basic Auth -> host gets its own key" 'curl -s -u admin:s3cret-pass http://127.0.0.1:${PX}/v1/models | grep -q "\"auth\":\"Bearer sk-strata-host-secret\""'
+check "host key set: other paths -> no key forwarded" 'curl -s -u admin:s3cret-pass http://127.0.0.1:${PX}/api/x | grep -q "\"auth\":null"'
+check "host key set: a wrong client key is still refused" '[ "$(code -H "Authorization: Bearer nope-nope-nope-nope" http://127.0.0.1:${PX}/v1/models)" = 401 ]'
+sleep 0.05; echo '{"serving":{"apiKey":null}}' > "${T}/state.json"
+check "host key removed (no restart): nothing forwarded" 'curl -s -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/v1/models | grep -q "\"auth\":null"'
 S="$(curl -sN -u admin:s3cret-pass "http://127.0.0.1:${PX}/stream")"
 check "streamed response arrives whole"   '[ "$(echo "${S}" | grep -c "^data:")" = 3 ]'
 L="$(curl -s -D - -o /dev/null -u admin:s3cret-pass "http://127.0.0.1:${PX}/redir" | tr -d "\r" | sed -n "s/^[Ll]ocation: //p")"

@@ -7,7 +7,11 @@
 // HTTPS（PROXY_TLS=on）：同一个端口同时收 HTTP 和 HTTPS（看连接的第一个字节是不是 TLS 握手）。证书优先用用户放在
 // PROXY_TLS_USER_DIR 里的 cert.pem + key.pem（比如从飞牛导出的正式证书），否则用 PROXY_TLS_DIR 里自动生成的自签名证书
 // （tls-cert.mjs，覆盖本机的主机名和各个 IP）。开启后网页走 HTTP 的会被 308 跳到 HTTPS；/v1 接口两种都收，已经配好的客户端不断。
-// 环境：PROXY_PORT、PROXY_UPSTREAM_PORT、PROXY_AUTH_FILE、PROXY_API_KEY_FILE（可选）、PROXY_TLS、PROXY_TLS_DIR、PROXY_TLS_USER_DIR
+// Strata 网页里也可以设一个 API Key（Serving 页的 Local sharing / Cloudflare，存在 PROXY_HOST_STATE 那个 state.json 的
+// serving.apiKey）。设了它，宿主会对 /v1 再校验一次：所以这里认证通过、把客户端的头去掉之后，若宿主有自己的 Key，就换上它再转发，
+// 两边各设各的也不会对不上（客户端只需要飞牛设置里的那个 Key）。
+// 环境：PROXY_PORT、PROXY_UPSTREAM_PORT、PROXY_AUTH_FILE、PROXY_API_KEY_FILE（可选）、PROXY_TLS、PROXY_TLS_DIR、PROXY_TLS_USER_DIR、
+//       PROXY_HOST_STATE（可选）
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
@@ -21,6 +25,7 @@ const LISTEN = Number(process.env.PROXY_PORT);
 const UP = Number(process.env.PROXY_UPSTREAM_PORT);
 const AUTH_FILE = process.env.PROXY_AUTH_FILE;
 const API_KEY_FILE = process.env.PROXY_API_KEY_FILE || '';
+const HOST_STATE = process.env.PROXY_HOST_STATE || '';
 if (!LISTEN || !UP || !AUTH_FILE) { console.error('PROXY_PORT, PROXY_UPSTREAM_PORT and PROXY_AUTH_FILE are required'); process.exit(2); }
 
 const log = (...a) => console.log(new Date().toISOString().replace('T', ' ').slice(0, 19), '[proxy]', ...a);
@@ -91,6 +96,20 @@ function admit(req) {
   return authorized(req) ? 'basic' : null;
 }
 
+// ---- 宿主自己的 API Key（Strata 网页里设的那个）--------------------------------------------
+let hostKey = null, hostKeyMtime = -1;
+function hostApiKey() {
+  if (!HOST_STATE) return null;
+  let m;
+  try { m = statSync(HOST_STATE).mtimeMs; } catch { hostKey = null; hostKeyMtime = -1; return null; }
+  if (m !== hostKeyMtime) {
+    try { const k = JSON.parse(readFileSync(HOST_STATE, 'utf8'))?.serving?.apiKey; hostKey = typeof k === 'string' && k.trim() ? k.trim() : null; }
+    catch { /* 宿主正在写这个文件：沿用上一次读到的 */ return hostKey; }
+    hostKeyMtime = m;
+  }
+  return hostKey;
+}
+
 const failures = new Map(); // 客户端地址 -> 连续失败次数：失败越多，回应越慢
 async function deny(remote, respond) {
   const n = (failures.get(remote) ?? 0) + 1;
@@ -106,6 +125,8 @@ function upstreamHeaders(req) {
   const h = { ...req.headers };
   delete h.authorization;               // 认证到此为止，不转给宿主
   delete h['x-api-key'];
+  // /v1：宿主若在网页里设了自己的 Key，它会再校验一次，换上它的 Key（只对 /v1；别的路径宿主不看这个头）。
+  if (isApiPath(req.url ?? '')) { const k = hostApiKey(); if (k) h.authorization = `Bearer ${k}`; }
   h.host = `127.0.0.1:${UP}`;
   // 宿主会核对 Origin / Referer 与自己的地址是否一致：改成它自己的。
   if (h.origin) h.origin = upstreamOrigin;
