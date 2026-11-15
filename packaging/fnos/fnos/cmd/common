@@ -76,6 +76,7 @@ apply_wizard_settings() {
     local custom="${wizard_endpoint:-}"
     local endpoint="" ms=""
     local api="${wizard_api:-false}"
+    local models="${wizard_models:-own}"
 
     [[ "${port}" =~ ^[0-9]+$ ]] && [ "${port}" -ge 1024 ] && [ "${port}" -le 65535 ] \
         || fail "端口无效：${port}"
@@ -91,6 +92,7 @@ apply_wizard_settings() {
         *) fail "模型下载源无效：${source}" ;;
     esac
     [[ "${api}" =~ ^(true|false)$ ]] || fail "API 访问设置无效：${api}"
+    [[ "${models}" =~ ^(own|other)$ ]] || fail "模型目录设置无效：${models}"
 
     mkdir -p "${TRIM_PKGVAR}/home"
     fix_owner "${TRIM_PKGVAR}"
@@ -125,6 +127,7 @@ apply_wizard_settings() {
         echo "STRATA_FPK_USER=${user}"
         echo "STRATA_FPK_HF_ENDPOINT='${endpoint}'"
         echo "STRATA_FPK_SOURCE='${ms}'"
+        echo "STRATA_FPK_MODELS=${models}"
     } > "${SETTINGS_FILE}"
     fix_owner "${TRIM_PKGVAR}"
 }

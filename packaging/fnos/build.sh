@@ -39,10 +39,12 @@ VARIANT="${VARIANT:-cuda}"
 case "${VARIANT}" in
     cuda)
         APPNAME=strata; DISPLAY_NAME="Strata"; SHARE=Strata; DEFAULT_PORT=47831
+        OTHER_APP=strata-gfx906; OTHER_SHARE=Strata-gfx906; OTHER_DISPLAY="Strata (gfx906)"
         GPU_VENDOR=nvidia; ENGINE_BACKEND=cuda; ENGINE_NOTE="CUDA 13，RTX 20/30/40/50"
         DESC_BASE="原生运行的 Strata（不依赖 Docker）：本地大模型推理引擎和网页界面，使用 NVIDIA CUDA。Node、Python、引擎和 CUDA 运行库都在包里，只需要宿主机装好 NVIDIA 驱动。" ;;
     gfx906)
         APPNAME=strata-gfx906; DISPLAY_NAME="Strata (gfx906)"; SHARE=Strata-gfx906; DEFAULT_PORT=47832
+        OTHER_APP=strata; OTHER_SHARE=Strata; OTHER_DISPLAY="Strata"
         GPU_VENDOR=amd; ENGINE_BACKEND=hip; ENGINE_NOTE="AMD gfx906：MI50 / MI60 / Radeon VII，ROCm 运行库在包里"
         ENGINE_COMPONENT="$(cd "${ENGINE_COMPONENT:?VARIANT=gfx906 needs ENGINE_COMPONENT=<engine component folder>}" && pwd)"
         DESC_BASE="原生运行的 Strata（不依赖 Docker）：本地大模型推理引擎和网页界面，使用 AMD gfx906 显卡（MI50 / MI60 / Radeon VII）。Node、Python、引擎、ROCm 运行库和 rocBLAS 内核都在包里，只需要内核自带的 amdgpu 驱动。" ;;
@@ -202,6 +204,8 @@ cat > "${PKG}/app/bin/variant.env" <<VENV
 STRATA_FPK_VARIANT=${VARIANT}
 STRATA_FPK_GPU_VENDOR=${GPU_VENDOR}
 STRATA_FPK_ENGINE_BACKEND=${ENGINE_BACKEND}
+STRATA_FPK_OTHER_APP=${OTHER_APP}
+STRATA_FPK_OTHER_SHARE=${OTHER_SHARE}
 VENV
 
 NODE_FULL="$("${APP}/node/bin/node" --version)"
@@ -215,6 +219,8 @@ for f in manifest app/ui/config config/privilege config/resource wizard/install 
         -e "s|@SHARE@|$(sed_escape "${SHARE}")|g" \
         -e "s|@PORT@|$(sed_escape "${DEFAULT_PORT}")|g" \
         -e "s|@DESC@|$(sed_escape "${DESC}")|g" \
+        -e "s|@OTHER_SHARE@|$(sed_escape "${OTHER_SHARE}")|g" \
+        -e "s|@OTHER_DISPLAY@|$(sed_escape "${OTHER_DISPLAY}")|g" \
         "${PKG}/${f}"
 done
 # fnos/manifest 里是上游版本；构建加上本地小版本，每次重建都是一次升级。

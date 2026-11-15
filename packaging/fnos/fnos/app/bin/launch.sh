@@ -34,6 +34,32 @@ SHARE="${SHARE%%:*}"
 [ -n "${SHARE}" ] && [ -d "${SHARE}" ] || SHARE="${PKGVAR}/share"
 mkdir -p "${SHARE}/models" "${SHARE}/workspace"
 
+# ---- 模型目录：两个 Strata（NVIDIA 版和 gfx906 版）可以共用一个 -----------------------
+# 飞牛的共享文件夹由它自己的 Trim-ACL 管（不是 POSIX ACL），应用（包括 cmd/ 脚本）以应用用户运行，改不了别的应用的目录：
+# 要用另一个 Strata 的模型目录，得在本应用设置的“授权目录”里加上它的共享文件夹（或其中的 models），飞牛通过
+# TRIM_DATA_ACCESSIBLE_PATHS 传进来。只认对方那个固定的共享文件夹（variant.env 的 STRATA_FPK_OTHER_SHARE）。
+MODELS_DIR="${SHARE}/models"
+if [ "${STRATA_FPK_MODELS:-own}" = "other" ]; then
+    other_models=""
+    IFS=':' read -r -a _authorized <<< "${TRIM_DATA_ACCESSIBLE_PATHS:-}"
+    for p in "${_authorized[@]}"; do
+        p="${p%/}"
+        case "${p}" in
+            */"${STRATA_FPK_OTHER_SHARE:-//}") cand="${p}/models" ;;
+            */"${STRATA_FPK_OTHER_SHARE:-//}"/models) cand="${p}" ;;
+            *) continue ;;
+        esac
+        mkdir -p "${cand}" 2>/dev/null || true
+        if [ -d "${cand}" ] && [ -w "${cand}" ] && [ -x "${cand}" ]; then other_models="${cand}"; break; fi
+    done
+    if [ -n "${other_models}" ]; then
+        MODELS_DIR="${other_models}"
+        log "models: shared with ${STRATA_FPK_OTHER_APP}: ${MODELS_DIR}"
+    else
+        log "models: sharing was asked for, but the shared folder ${STRATA_FPK_OTHER_SHARE:-of the other Strata} is not among this app's authorized directories (or cannot be written): add it in the app's settings, then restart the app; using ${MODELS_DIR}"
+    fi
+fi
+
 # ---- 宿主机的 NVIDIA 驱动库 --------------------------------------------------
 # 只把驱动自带的几个库做成符号链接放进一个单独目录，再把这个目录加进 LD_LIBRARY_PATH：
 # 不会把宿主机别的库带进来，内置的 CUDA 运行库（cudart / cuBLAS）仍然优先用包里的。
@@ -81,7 +107,7 @@ unset HF_ENDPOINT STRATA_SOURCE
 
 # Strata 自己的东西
 export STRATA_HOME="${HOME_DIR}/strata"
-export STRATA_MODELS_DIR="${SHARE}/models"
+export STRATA_MODELS_DIR="${MODELS_DIR}"
 export STRATA_WORKSPACE="${SHARE}/workspace"
 export STRATA_COMPONENTS_DIR="${PKGVAR}/components"
 export STRATA_INSTALL_DIR="${PKGVAR}/install"
@@ -94,6 +120,9 @@ export STRATA_FPK_GPU_VENDOR STRATA_ENGINE_BACKEND="${STRATA_FPK_ENGINE_BACKEND}
 # 引擎、Control、DeepSeek 引擎都随 fpk 走，不在线更新（packaging/fnos/patches/0002-no-online-updates.patch）。
 # 模型、读图文件、DFlash2 草稿模型照常下载（它们不是程序）。
 export STRATA_FPK_NO_UPDATES=1
+# Qwen3.6 的上下文（fp32 K/V）整个在显存里：小显存卡默认的 128K 起不来时自动减半重试，成功的值记进模型配置
+# （packaging/fnos/patches/0003-q36-context-fallback.patch）。在模型设置里自己选过的上下文不会被改。
+export STRATA_FPK_CONTEXT_FALLBACK=1
 # gfx906（MI50 / MI60 / Radeon VII）不在上游 Control 的 AMD 支持名单里：本包的 Control 补丁加了这个开关
 # （packaging/fnos/patches/control/0001-gfx906-opt-in-and-backend.patch）。
 [ "${STRATA_FPK_VARIANT}" = gfx906 ] && export STRATA_EXPERIMENTAL_GFX906=1

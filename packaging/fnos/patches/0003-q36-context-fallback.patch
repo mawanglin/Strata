@@ -1,0 +1,71 @@
+--- a/server/native-resources.mjs	2026-11-15 19:03:54.981835840 +0800
++++ b/server/native-resources.mjs	2026-11-15 19:12:52.234374518 +0800
+@@ -1,5 +1,6 @@
+ import {USER_KEY,flagValue} from './native-user-args.mjs';
+ import {parseEngineVersion} from './engine-version.mjs';
++import {readFileSync} from 'node:fs';
+ 
+ /** The engine's own default reserve, and the one setup writes for pictures read on the GPU: neither is a choice of the person. */
+ const ENGINE_DEFAULT_RESERVE_MIB=700;
+@@ -131,6 +132,21 @@
+  if(/0xC0000135|0xC000007B|0xC0000142|0xC000001D|0xC0000005|0xC0000409|0xC0000022|error while loading shared libraries|cannot open shared object file|\bENOENT\b|exit code 127|exit code 139|illegal instruction/i.test(text))return null;
+  const ranOut=/out of memory|memory guard|\boom\b|\bkilled\b|exit code 137|cannot allocate|not enough memory|bad_alloc|insufficient memory/i.test(text),first=ranOut?'The first start ran out of memory':'The first start did not finish';
+  if(!/server_exited|exited before|died before|engine stopped|pinned-memory-exhausted|mapped staging|out of memory|memory guard|\bkilled\b/i.test(text))return null;
++ // fnOS package (STRATA_FPK_CONTEXT_FALLBACK=1): the Qwen3.6 engine (strata-q36) keeps the whole conversation context (fp32 K/V) in VRAM, and on
++ // a card too small for it the start stops with no numbers in the failure text. Its own log says so ("strata-q36: ... out of memory" /
++ // "not enough VRAM"): a shorter context is the one setting that helps, so halve it (down to 16K). keepContext asks the caller to keep it.
++ const q36Stop=process.env.STRATA_FPK_CONTEXT_FALLBACK==='1'?q36VramStop(config?.log):false;
++ // Several sessions (--batch / "parallel") that do not fit while one does: the caller's one-request-at-a-time try is the fix, not a shorter context.
++ if(q36Stop&&q36Stop.slots>1&&q36Stop.eachGib+1<=q36Stop.freeGib)return null;
++ if(q36Stop){
++  const args=[...(config.args??[])],cx=args.indexOf('--max-context'),ctx=cx>=0?Number(args[cx+1])||0:0;
++  if(ctx>16384){
++   const next=Math.max(16384,Math.floor(ctx/2));args[cx+1]=String(next);
++   return {config:{...config,args},keepContext:next,
++    words:`This graphics card has no room for a ${ctx}-token conversation context with this model, so Strata started again with ${next} tokens and keeps that for this model. A different size can be chosen in the model's settings.`,
++    detail:`--max-context ${next} (was ${ctx})`};
++  }
++ }
+  // The engine stopped because the GPU's expert cache got no room (a 10 GB card with the app's 20% reserve and pictures on): the engine can shrink its own
+  // reserve only when none was given, and the app always gives one. Ask for less kept free (never under 1024 MiB: below that the driver pages
+  // graphics memory to RAM, #2065) and, when that is not enough, for a shorter context. Never saved.
+@@ -170,3 +186,18 @@
+  args.push('--resident-budget-gib',String(budget));
+  return {config:{...config,args},words:`${first}, so Strata started again in low-memory mode: ${budget} GB of the model stays in RAM and the rest is read from the SSD. It is slower, but it should load.`,detail:`--resident-budget-gib ${budget}`};
+ }
++
++/** fnOS package: did the last start of the Qwen3.6 engine stop for lack of VRAM? Read from the engine's own log (the run config's "log"), from
++ *  the last "engine started" line on, so an older start's lines never count. false when there is no such stop (or no readable log), else
++ *  {slots, eachGib, freeGib}: for a stop of several sessions the engine names their count and size ("not enough VRAM for 2 slots at a context
++ *  of N (X GiB each, Y GiB free)"), otherwise slots is 0. */
++export function q36VramStop(logPath){
++ if(typeof logPath!=='string'||!logPath)return false;
++ let text='';
++ try{text=readFileSync(logPath,'utf8');}catch{return false;}
++ const at=text.lastIndexOf('engine started:');
++ const run=(at>=0?text.slice(at):text).slice(-65536);
++ if(!/strata-q36:[^\n]*(out of memory|not enough VRAM)/i.test(run))return false;
++ const m=run.match(/not enough VRAM for (\d+) slots at a context of \d+ \(([\d.]+) GiB each, ([\d.]+) GiB free\)/);
++ return m?{slots:Number(m[1]),eachGib:Number(m[2]),freeGib:Number(m[3])}:{slots:0,eachGib:0,freeGib:0};
++}
+--- a/server/native-control.mjs	2026-11-15 19:03:56.137878059 +0800
++++ b/server/native-control.mjs	2026-11-15 19:08:54.985108601 +0800
+@@ -2,6 +2,7 @@
+ import {missingFilesError,missingNames} from './missing-files.mjs';
+ import { spawn } from 'node:child_process';
+ import {chooseParallel,applyParallel,withoutParallel,FALLBACK_NOTE} from './native-parallel.mjs';
++import {q36VramStop} from './native-resources.mjs';
+ import { randomBytes, randomUUID, createHash } from 'node:crypto';
+ import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, realpathSync, copyFileSync, renameSync, rmSync, statfsSync, unlinkSync, chmodSync, statSync, accessSync, constants } from 'node:fs';
+ import { join, resolve, dirname, basename, sep, relative, isAbsolute } from 'node:path';
+@@ -530,8 +531,8 @@
+     retried={words,detail};if(dropParallel){instance.parallel=1;if(!safer)parallelNote=FALLBACK_NOTE;}
+     append(id,`The first start stopped (${said}). Starting once more: ${detail}`);job.summary=words;job.details=[said,`Second try: ${detail}`];instance.notice=words;emit();
+     delete instance.splitNote;
+-    try{await startWith(retryConfig,false);append(id,'Strata Control reports the engine is ready (second try).');}
+-    catch(second){if(await stillLoading(second))adopted=true;else{const said2=humanStartError(second);instance.status='error';instance.error=said2;/* the first stop and the second try stay in job.details; the pop-up shows the last stop once */emit();throw new Error(instance.error);}}}}
++    const fpkKeepContext=value=>{/* fnOS package: the context the Qwen3.6 engine could start with is written back to the model's run config, so the next load starts there. Never over a size the person chose (ui_context_chosen). The loaded `config` is changed too: the end of this load writes it back. */if(config?.ui_context_chosen===true)return false;const set=obj=>{for(const key of ['args','args_written']){const a=obj?.[key];if(Array.isArray(a)){const i=a.indexOf('--max-context');if(i>=0)a[i+1]=String(value);}}};try{const disk=JSON.parse(readFileSync(configFile,'utf8'));set(disk);writeFileSync(configFile,JSON.stringify(disk,null,1));set(config);set(cfg);if(resources&&typeof resources==='object')set(resources);return true;}catch{return false;}};try{await startWith(retryConfig,false);append(id,'Strata Control reports the engine is ready (second try).');if(safer?.keepContext){instance.context=safer.keepContext;if(fpkKeepContext(safer.keepContext))append(id,`This model keeps a ${safer.keepContext}-token context from now on.`);}}
++    catch(second){if(await stillLoading(second))adopted=true;else{let said2=humanStartError(second);/* fnOS package: still no room at the shorter context: keep half of it, so the next load starts lower */if(safer?.keepContext&&safer.keepContext>16384&&q36VramStop(retryConfig?.log)){const lower=Math.max(16384,Math.floor(safer.keepContext/2));if(fpkKeepContext(lower))said2=`This graphics card has no room for a ${safer.keepContext}-token context with this model either. Strata set ${lower} tokens for it: load the model again.`;}instance.status='error';instance.error=said2;/* the first stop and the second try stay in job.details; the pop-up shows the last stop once */emit();throw new Error(instance.error);}}}}
+   } else {
+   proc=spawnProcess(py,[join(repo(),'serve/server.py'),'--engine','strata','--config',configPath,'--port',String(cfg.port),'--host','127.0.0.1'],{cwd:repo(),detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:sourceServerEnvironment()});
+   instances.set(id,instance);processes.set(id,proc);if(!defaultId||!args.multiple||wasDefault)defaultId=id;

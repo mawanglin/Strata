@@ -101,6 +101,31 @@
         ]
     },
     {
+        "stepTitle": "模型目录",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "模型动辄几十 GB。同一台 NAS 上同时装了 Strata 的 NVIDIA 版和 AMD gfx906 版时，可以让两个应用<b>共用一个模型目录</b>：在一边下载过的模型，另一边“下载”时只校验、不再重复下载（两边都能跑的是 Qwen3.8-Flash-Next 系列；Qwen3.6 和 DeepSeek 只有 NVIDIA 版能跑）。<br><b>飞牛只允许应用访问自己的和被授权的目录</b>，所以选“共用”后还要：到飞牛应用中心里本应用的<b>设置 → 授权目录</b>，添加共享文件夹「@OTHER_SHARE@」，再<b>重启本应用</b>。没授权时自动用本应用自己的目录，应用日志里会说明。已经下载在本应用共享文件夹里的模型照常可用，不会被移动。"
+            },
+            {
+                "type": "radio",
+                "field": "wizard_models",
+                "label": "模型存放位置",
+                "initValue": "own",
+                "options": [
+                    {
+                        "label": "本应用的共享文件夹「@SHARE@」",
+                        "value": "own"
+                    },
+                    {
+                        "label": "与「@OTHER_DISPLAY@」共用：使用共享文件夹「@OTHER_SHARE@」的 models（需要先在授权目录里添加它）",
+                        "value": "other"
+                    }
+                ]
+            }
+        ]
+    },
+    {
         "stepTitle": "API 访问（可选）",
         "items": [
             {

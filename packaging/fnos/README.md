@@ -73,6 +73,17 @@ Strata 首次使用要下载几十 GB 的模型。向导里可选：
 
 之后可以在飞牛应用设置里改，保存后应用自动重启。
 
+## 两个应用共用模型目录
+
+同时装了 NVIDIA 版和 gfx906 版时，可以让一个用另一个的 `models` 目录，下载过的模型不用再下（两边都能跑的是 Qwen3.8-Flash-Next 系列）：
+
+1. 在应用设置的“模型目录”里选“与另一个 Strata 共用”。
+2. **在飞牛应用中心里本应用的“设置 → 授权目录”里添加对方的共享文件夹**（NVIDIA 版加 `Strata-gfx906`，gfx906 版加 `Strata`），再重启本应用。
+
+为什么要第 2 步：飞牛的共享文件夹由它自己的 **Trim-ACL**（`/usr/trim/bin/trimacl`）管，每个共享文件夹只允许它所属的应用用户和用户组 1000 访问；应用（包括 `cmd/` 生命周期脚本）都以应用用户运行，改不了别的应用的目录（试过 POSIX ACL：写得进去但不起作用，已撤销）。“授权目录”是飞牛给应用开放别的目录的正式办法。没授权时应用自动用自己的目录，日志里有一行 `models: sharing was asked for, but ...` 说明原因。
+
+**没有在真机上实测授权后的效果**（授权目录只能在飞牛网页里加）；`tests/test_models_dir.sh` 检查了目录选择的逻辑。
+
 ## 数据在哪里
 
 | | 位置 |
@@ -96,7 +107,8 @@ Strata 首次使用要下载几十 GB 的模型。向导里可选：
 
 ## 已知问题和注意事项
 
-- **12 GB 显存跑 128K 上下文会 `cudaMalloc … out of memory`**：Qwen3.6 的默认上下文是 128K，在 RTX 3060 上加载失败（引擎日志：`q36_engine.cu:1128`）。实测把上下文改成 32K 就能加载（在界面里选上下文；我是直接改了模型配置文件里的 `--max-context`）。更大显存的卡不一定有这个问题。
+- **小显存卡的上下文：自动降档**（`patches/0003-q36-context-fallback.patch`，`STRATA_FPK_CONTEXT_FALLBACK=1`）。Qwen3.6 引擎把整个上下文（fp32 的 K/V）放在显存里，没有放到内存的选项（大内存用来放专家：64K 时 256 个专家全在内存里），所以上游“所有卡默认 128K”在 12 GB 卡上起不来。补丁让它在引擎日志说显存不够时把上下文减半重试（最低 16K），成功的值写回模型配置，下次直接从这里起；用户在模型设置里自己选过的上下文不改；只是“同时 2 个请求”放不下（单个放得下）时交给上游的“一次一个请求”处理，不降上下文。
+  RTX 3060 12 GB 实测：128K ❌，96K ❌（放完上下文只剩 216 MiB，专家缓冲区要 1256 MiB），**64K ✅（约 29.7 tok/s）**，32K ✅（约 36 tok/s）。连续三次加载：第 1 次 128K → 自动 64K 并记住，第 2、3 次直接 64K。
 - **卸载必须在飞牛网页里做**（`appcenter-cli uninstall` 会拒绝）；`appcenter-cli install-fpk` 对已安装的同名应用会直接跳过，**升级也要在网页里做**。所以“升级路径”和“卸载向导”**没有实测**。
 - **安装失败 `10234 … acl_get_file failed`**：飞牛安装时以 root 遍历应用目录，悬空 / 绝对 / 指到应用目录外的符号链接会让它失败。`build.sh` 在打包前检查这三类链接，有就直接报错。
 - 第一次 `appcenter-cli start` 返回过一次 `Failed to launch app. error code 10500`，但应用中心日志里这次启动是 `success`，应用也确实起来了，之后的 start / stop 都正常；原因没查清。
@@ -129,6 +141,7 @@ Strata 首次使用要下载几十 GB 的模型。向导里可选：
 | `patches/control/0001-gfx906-opt-in-and-backend.patch` | Control 的 `setup.py` | ① 加开关 `STRATA_EXPERIMENTAL_GFX906=1`（照上游 gfx1103 / gfx1150 的写法），把 gfx906 加进 AMD 支持名单；② 安装时没指定后端就用 `STRATA_ENGINE_BACKEND`，否则同时有 NVIDIA 卡的机器会默认装成 CUDA |
 | `patches/0001-gpu-vendor.patch` | 宿主 | 只保留本变体厂商的卡（两个变体共用） |
 | `patches/0002-no-online-updates.patch` | 宿主 | 关掉引擎 / Control 的在线更新（两个变体共用） |
+| `patches/0003-q36-context-fallback.patch` | 宿主 | Qwen3.6 显存不够时自动降上下文并记住（两个变体共用；gfx906 不跑 Qwen3.6，不会触发） |
 
 `launch.sh` 按 `bin/variant.env`（构建时写入）设置：gfx906 版 `STRATA_FPK_GPU_VENDOR=amd`、`STRATA_ENGINE_BACKEND=hip`、`STRATA_EXPERIMENTAL_GFX906=1`，不链接任何宿主机的库。
 
@@ -165,7 +178,10 @@ VARIANT=gfx906 ENGINE_COMPONENT=/path/to/work/out/components/engine/0.1.59-linux
 `build.sh` 需要 Node 24.12+、python3、curl、`fnpack`（`~/.local/bin/fnpack` 或 `FNPACK=`）、网络，每个变体的工作目录约 3 GB（`packaging/fnos/build/<变体>/`，下载缓存共用 `packaging/fnos/build/cache/`）。版本号形如 `0.2.13-cob.1`（上游 `0.2.13` + 本地小版本，符合 fork 规则）。换上游版本时同时改 `UPSTREAM_TAG`、`CONTROL_ASSET`、`ENGINE_ASSET`；校验值从该 release 的 `SHA256SUMS.txt` 自动取。
 
 ```bash
-packaging/fnos/tests/test_proxy.sh   # 不需要 GPU / 飞牛：认证代理的 25 项检查（用户名密码、/v1 的 API Key、转发、流式、WebSocket）
+packaging/fnos/tests/test_proxy.sh             # 认证代理（用户名密码、/v1 的 API Key、转发、流式、WebSocket），25 项
+packaging/fnos/tests/test_context_fallback.sh  # Qwen3.6 上下文自动降档的判断，11 项
+packaging/fnos/tests/test_models_dir.sh        # 共用模型目录的选择，5 项
+# 都不需要 GPU / 飞牛
 ```
 
 ## 目录
@@ -173,7 +189,7 @@ packaging/fnos/tests/test_proxy.sh   # 不需要 GPU / 飞牛：认证代理的 
 ```
 build.sh                  构建脚本（VARIANT=cuda|gfx906）
 gfx906/                   gfx906 引擎的构建：build-engine-docker.sh（宿主侧）、build-engine.sh（容器里）、patches/（引擎源码补丁）
-patches/                  宿主补丁（0001-gpu-vendor、0002-no-online-updates）；patches/control/ 是 Control 的补丁
+patches/                  宿主补丁（0001-gpu-vendor、0002-no-online-updates、0003-q36-context-fallback）；patches/control/ 是 Control 的补丁
 fnos/                     fpk 骨架（@APPNAME@ 等占位符由 build.sh 替换）
 ├── manifest, config/     应用清单；privilege（应用用户 strata + video/render 组）、resource（共享文件夹、防火墙）
 ├── cmd/                  生命周期脚本（start/stop/status、安装/配置/升级/卸载回调）
