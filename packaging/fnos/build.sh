@@ -3,7 +3,7 @@
 #
 #   packaging/fnos/build.sh
 #
-# 输出：packaging/fnos/dist/strata_<版本>_amd64.fpk
+# 输出：dist/strata_<版本>_amd64.fpk
 #
 # 需要：Node 24.12+（构建界面用）、python3、curl、tar、fnpack（在 PATH 或 ~/.local/bin，或用 FNPACK=… 指定）、网络。
 # 运行时全部来自上游 release（逐个核对 SHA-256）：Terminal 包（自带 Python 和依赖）、CUDA13 引擎包
@@ -36,7 +36,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "${HERE}/../.." && pwd)"
 WORK_DIR="${WORK_DIR:-${HERE}/build}"
 CACHE="${WORK_DIR}/cache"
-DIST_DIR="${HERE}/dist"
+DIST_DIR="${REPO}/dist"
 PKG="${WORK_DIR}/pkg"
 FNPACK="${FNPACK:-$(command -v fnpack || echo "${HOME}/.local/bin/fnpack")}"
 RELEASE_URL="https://github.com/${UPSTREAM_REPO}/releases/download/${UPSTREAM_TAG}"

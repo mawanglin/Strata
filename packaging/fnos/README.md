@@ -77,7 +77,7 @@ Strata 首次使用要下载几十 GB 的模型。向导里可选：
 ## 构建
 
 ```bash
-packaging/fnos/build.sh          # 输出 packaging/fnos/dist/strata_<版本>_amd64.fpk
+packaging/fnos/build.sh          # 输出 dist/strata_<版本>_amd64.fpk
 BUILD_NUMBER=2 packaging/fnos/build.sh
 ```
 
@@ -101,5 +101,5 @@ fnos/                     fpk 骨架（@APPNAME@ 等占位符由 build.sh 替换
     ├── bin/set-password.mjs
     └── ui/               飞牛桌面入口（直接打开网页端口）
 tests/test_proxy.sh       认证代理的本地测试
-build/, dist/             构建缓存和成品（不入库）
+build/                    构建缓存（不入库）；成品在仓库根目录的 dist/（不入库）
 ```
