@@ -1,0 +1,681 @@
+diff -ruN a/cmake/strata_gpu_engine.cmake b/cmake/strata_gpu_engine.cmake
+--- a/cmake/strata_gpu_engine.cmake	2026-11-09 06:22:26.000000000 +0800
++++ b/cmake/strata_gpu_engine.cmake	2026-11-16 02:21:04.000000000 +0800
+@@ -516,10 +516,10 @@
+   # Its own executable for now (strata-dsv41); a family switch in `strata` comes after first light.  OFF by default: it
+   # changes no existing target (the vendored kernels live in strata::dsv41k, so no symbol is shared with strata_kernels).
+   option(STRATA_BUILD_DSV41 "Build the DeepSeek-V4.1 engine path (strata-dsv41)" OFF)
+-  if(STRATA_BUILD_DSV41 AND NOT STRATA_HIP_GFX906)
++  if(STRATA_BUILD_DSV41)   # (fnOS gfx906 package: also on STRATA_HIP_GFX906, through the dsv41 HIP paths and the wave64 compat layer)
+     add_library(strata_dsv41_kernels STATIC src/dsv41/vendor/exl3.cu src/dsv41/vendor/sampler.cu src/dsv41/vendor/moe_win.cu
+                 src/dsv41/vendor/exl3_cpu.cpp)
+-    if(NOT STRATA_ENABLE_HIP)   # (the pre-sm_80 NVIDIA decode kernels exl3.cu dispatches to)
++    if(NOT STRATA_ENABLE_HIP AND NOT STRATA_HIP_GFX906)   # (the pre-sm_80 NVIDIA decode kernels exl3.cu dispatches to)
+       target_sources(strata_dsv41_kernels PRIVATE src/dsv41/vendor/exl3_legacy.cu)
+     endif()
+     target_include_directories(strata_dsv41_kernels PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
+@@ -538,6 +538,9 @@
+     if(NOT STRATA_BUILD_ID)
+       set(STRATA_BUILD_ID unknown)
+     endif()
++    if(STRATA_HIP_GFX906)   # (fnOS gfx906: no WMMA dense GEMM here, src/dsv41/ds4_gfx906_stubs.cpp says so)
++      target_sources(strata-dsv41 PRIVATE src/dsv41/ds4_gfx906_stubs.cpp)
++    endif()
+     set_source_files_properties(src/dsv41/ds4_main.cpp PROPERTIES COMPILE_DEFINITIONS "DS4_BUILD_ID=\"${STRATA_BUILD_ID}\"")
+     target_include_directories(strata-dsv41 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories}
+                                ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill)
+@@ -601,7 +604,7 @@
+     if(STRATA_NATIVE_EXPERTS)
+       # the trellis experts (device kernels ds4_tq.cu, CPU lane ds4_tq_cpu.cpp) against a double reference; needs a GPU, no model
+       # both test .cpp files launch kernels, so they compile as HIP on the AMD backend and as CUDA on the NVIDIA one
+-      if(STRATA_ENABLE_HIP)
++      if(STRATA_ENABLE_HIP OR STRATA_HIP_GFX906)
+         set(_ds4_test_lang HIP)
+       elseif(STRATA_ENABLE_CUDA)
+         set(_ds4_test_lang CUDA)
+@@ -622,10 +625,10 @@
+                                  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cpu)
+       target_link_libraries(ds4_tq_test_portable PRIVATE strata_kernels_cpu ${_strata_gpu_runtime_target} Threads::Threads)
+       target_compile_definitions(ds4_tq_test_portable PRIVATE STRATA_DSV41_TQ_CPU=1 DS4_TQ_PORTABLE=1)
+-      if(STRATA_ENABLE_HIP)
++      if(STRATA_ENABLE_HIP OR STRATA_HIP_GFX906)
+         target_compile_options(ds4_tq_test_portable PRIVATE "$<$<COMPILE_LANGUAGE:HIP,CXX>:SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/dsv41/hip_extra.h>")
+       endif()
+-      if(STRATA_ENABLE_HIP)
++      if(STRATA_ENABLE_HIP OR STRATA_HIP_GFX906)
+         target_compile_options(ds4_tq_test PRIVATE "$<$<COMPILE_LANGUAGE:HIP,CXX>:SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/dsv41/hip_extra.h>")
+       endif()
+       # the i-quant experts (ds4_iq.cu) against ggml's own decode of the same blocks + a double reference, device and CPU
+@@ -637,7 +640,7 @@
+                                  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cpu)
+       target_link_libraries(ds4_iq_test PRIVATE strata_kernels_cpu ${_strata_gpu_runtime_target} Threads::Threads)
+       target_compile_definitions(ds4_iq_test PRIVATE STRATA_DSV41_TQ_CPU=1)
+-      if(STRATA_ENABLE_HIP)
++      if(STRATA_ENABLE_HIP OR STRATA_HIP_GFX906)
+         target_compile_options(ds4_iq_test PRIVATE "$<$<COMPILE_LANGUAGE:HIP,CXX>:SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/dsv41/hip_extra.h>")
+       endif()
+       # the dense weights (ds4_iq.cu dequant_rows / mv / f16_rows, ds4_gguf.cu rows / mv, the chunk GEMM) against a CPU reference for every
+@@ -648,7 +651,10 @@
+                                  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)
+       target_link_libraries(ds4_dq_test PRIVATE strata_prefill ${_strata_gpu_runtime_target} ${_strata_gpu_blas_target} Threads::Threads)
+       target_compile_definitions(ds4_dq_test PRIVATE DQ_TEST_GGUF=1 DQ_TEST_GEMM=1)
+-      if(STRATA_ENABLE_HIP)
++      if(STRATA_HIP_GFX906)
++        target_sources(ds4_dq_test PRIVATE src/dsv41/ds4_gfx906_stubs.cpp)
++      endif()
++      if(STRATA_ENABLE_HIP OR STRATA_HIP_GFX906)
+         target_compile_options(ds4_dq_test PRIVATE "$<$<COMPILE_LANGUAGE:HIP,CXX>:SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/dsv41/hip_extra.h>")
+       endif()
+       # the kept conversations' .meta file and prefix matching (ds4_slotmeta.hpp): no GPU, no model
+@@ -682,9 +688,12 @@
+       target_include_directories(ds4_pick_rule_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)
+       target_compile_features(ds4_pick_rule_test PRIVATE cxx_std_17)
+     endif()
+-    if(STRATA_ENABLE_HIP)
++    if(STRATA_ENABLE_HIP OR STRATA_HIP_GFX906)
+       foreach(_t strata_dsv41_kernels strata-dsv41)
+         target_compile_options(${_t} PRIVATE "$<$<COMPILE_LANGUAGE:HIP,CXX>:SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/dsv41/hip_extra.h>")
++        if(STRATA_HIP_GFX906)   # (the gfx906 compat layer's cublas_v2.h is the hipBLAS v2 API: hip_extra.h is included first)
++          target_compile_definitions(${_t} PRIVATE HIPBLAS_V2=1)
++        endif()
+       endforeach()
+     endif()
+   endif()
+diff -ruN a/include/strata/dsv41/hip_extra.h b/include/strata/dsv41/hip_extra.h
+--- a/include/strata/dsv41/hip_extra.h	2026-11-09 06:22:26.000000000 +0800
++++ b/include/strata/dsv41/hip_extra.h	2026-11-16 02:18:37.000000000 +0800
+@@ -4,6 +4,9 @@
+ // (include/strata/hip_compat) does not map.  Force-included into the dsv41 targets only, so no other target changes.
+ // The mappings are Project Maya's include/strata/hip_compat (MIT, third_party/project-maya/NOTICE.md).
+ #pragma once
++#if defined(STRATA_HIP_GFX906) && !defined(HIPBLAS_V2)
++#define HIPBLAS_V2
++#endif
+ #include <hip/hip_runtime.h>
+ #include <hipblas/hipblas.h>
+ #ifndef __grid_constant__
+@@ -48,3 +51,9 @@
+ #ifndef cudaDataType
+ #define cudaDataType hipDataType
+ #endif
++#ifndef cublasSgemm
++#define cublasSgemm hipblasSgemm   // (fnOS gfx906: the compat layer maps cublasGemmEx only)
++#endif
++#ifndef cudaDevAttrIntegrated
++#define cudaDevAttrIntegrated hipDeviceAttributeIntegrated
++#endif
+diff -ruN a/src/dsv41/ds4_gfx906_stubs.cpp b/src/dsv41/ds4_gfx906_stubs.cpp
+--- a/src/dsv41/ds4_gfx906_stubs.cpp	1970-01-01 07:30:00.000000000 +0730
++++ b/src/dsv41/ds4_gfx906_stubs.cpp	2026-11-16 02:21:04.000000000 +0800
+@@ -0,0 +1,7 @@
++// fnOS gfx906 package: the one symbol of src/prefill/wmma_gemm.cu (the RDNA3 WMMA dense GEMM) that the DeepSeek engine and
++// ds4_dq_test call on AMD. gfx906 (MI50 / MI60 / Radeon VII) has no WMMA, so it answers "not here" and the caller keeps hipBLAS,
++// exactly what wmma_gemm.cu's own stub does on a build without gfx11. strata_prefill leaves wmma_gemm.cu out of the gfx906 engine.
++#include <cstdint>
++bool strata_pf_gemm_f16_ld(const uint16_t*, int64_t, const uint16_t*, int64_t, float*, int64_t, int64_t, int64_t, int64_t, float, void*) {
++    return false;
++}
+diff -ruN a/src/dsv41/ds4_gguf.cu b/src/dsv41/ds4_gguf.cu
+--- a/src/dsv41/ds4_gguf.cu	2026-11-09 06:22:26.000000000 +0800
++++ b/src/dsv41/ds4_gguf.cu	2026-11-16 02:07:23.000000000 +0800
+@@ -14,7 +14,7 @@
+ #include "ds4_numerics.cuh"
+ 
+ #include <cuda_fp16.h>
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+ #include <mma.h>
+ #endif
+ 
+@@ -849,7 +849,7 @@
+ 
+ // the same on the tensor cores: a block BM rows x BN outputs, 8 warps each 16 rows x 32 outputs (2 fragments, gate and
+ // up: 4), a 32-value MXFP4 block of K a step (2 WMMA k-steps), the tiles in shared memory as F16
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+ namespace wm = nvcuda::wmma;
+ constexpr int kLdT = 40;   // halves a tile row (32 + 8: WMMA wants a multiple of 8; the pad spreads the banks)
+ template <bool GATE_UP>
+@@ -942,7 +942,7 @@
+     }
+ }
+ #endif
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+ // the same on an AMD wave32 GPU's WMMA (RDNA3 / RDNA3.5 gfx11, RDNA4 gfx12): 8 waves each 16 rows x 32 outputs, the
+ // tiles in shared memory as F16, F32 accumulation - each lane gives its row / column's 16 values of a k-step (gfx12:
+ // its half of them), and holds 8 of the 16 x 16 results (rows 2 i + hi on gfx11, 8 hi + i on gfx12; column lane % 16)
+@@ -1070,7 +1070,7 @@
+ }
+ #endif
+ bool tc_ok() {   // sm_70 and later (WMMA F16) / AMD gfx11, gfx12 (wave32 WMMA); STRATA_DS4_NO_TC=1 keeps the F32 kernel
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     static const bool ok = [] {
+         int dev = 0;
+         cudaGetDevice(&dev);
+@@ -1703,7 +1703,7 @@
+     k.h = (__half*) h16;
+     k.ldo = ldh;
+     const dim3 grid((unsigned) ((sa.max_rows + BM - 1) / BM), (unsigned) (sa.n_ff / BN), (unsigned) sa.n_exp);
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     if (tc_ok()) strata_ds4_launch(mx_set_tc_kernel<true>, grid, kThreads, 0, s, k);
+ #else
+     if (tc_ok()) strata_ds4_launch(mx_set_wmma_kernel<true>, grid, kThreads, 0, s, k);
+@@ -1760,7 +1760,7 @@
+     k.y = y;
+     k.ldo = ldy;
+     const dim3 grid((unsigned) ((sa.max_rows + BM - 1) / BM), (unsigned) (sa.n_embd / BN), (unsigned) sa.n_exp);
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     if (tc_ok()) strata_ds4_launch(mx_set_tc_kernel<false>, grid, kThreads, 0, s, k);
+ #else
+     if (tc_ok()) strata_ds4_launch(mx_set_wmma_kernel<false>, grid, kThreads, 0, s, k);
+diff -ruN a/src/dsv41/ds4_iq.cu b/src/dsv41/ds4_iq.cu
+--- a/src/dsv41/ds4_iq.cu	2026-11-09 06:22:26.000000000 +0800
++++ b/src/dsv41/ds4_iq.cu	2026-11-16 02:07:23.000000000 +0800
+@@ -11,7 +11,7 @@
+ #include "ds4_experts_rule.hpp"
+ 
+ #include <cuda_fp16.h>
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+ #include <mma.h>
+ #endif
+ 
+@@ -506,7 +506,7 @@
+ // The token kernels (gate_up_kernel / down_kernel) are bound by instructions per weight, not by memory, so on CUDA a type may
+ // decode through a larger shared-memory table that folds more of the work into one lookup.  The arithmetic is unchanged
+ // (the same integer codes into the same dp4a sums, the same F32 scales in the same order), so the results are the same bits.
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+ template <int T> struct Fast { static constexpr int WORDS = 0; };   // 0: this type decodes as decode<T>
+ // IQ1_M: the 12-bit (neg, 11-bit grid index) -> its 8 int8 codes (iq1_codes with the sub-block delta's sign), 2 words
+ template <> struct Fast<kIQ1_M> { static constexpr int WORDS = 8192; };
+@@ -522,7 +522,7 @@
+ 
+ // Persistent grids (blocks looping over work items) only for the types with a codebook worth keeping in the block (8 KiB and
+ // more); the others run a block (tile, group) as before - their blocks leave at once when the group is empty.
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+ template <int T>
+ constexpr bool kPersist = false;   // (HIP keeps the release grids)
+ #else
+@@ -534,7 +534,7 @@
+ __device__ __forceinline__ void load_tab_fast(uint32_t* tab) {
+     if constexpr (!F || Fast<T>::WORDS == 0) {
+         load_tab<T>(tab);
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     } else if constexpr (T == kIQ1_M) {   // a copy of the generated table (ds4_iq1m_codes.inc): 2048 x 16 bytes
+         const uint4* src = (const uint4*) kIq1mCodes;
+         uint4* dst = (uint4*) tab;
+@@ -813,7 +813,7 @@
+     }
+ }
+ 
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+ // the same on the tensor cores (sm_70+): 8 warps each 16 rows x 32 outputs, the tiles F16 in shared memory
+ namespace wm = nvcuda::wmma;
+ constexpr int kLdT = 40;
+@@ -1083,7 +1083,7 @@
+ }
+ 
+ bool tc_ok() {   // as ds4_gguf.cu's: sm_70 and later, STRATA_DS4_NO_TC=1 keeps the F32 kernel
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     return false;
+ #else
+     // (per device: the cards of a multi-GPU run need not be the same generation)
+@@ -1126,7 +1126,7 @@
+ // its codebook loaded once; HIP keeps the full grid (one tile a block)
+ template <auto Kernel>
+ int resident_ctas() {   // (a static a kernel: the occupancy differs by the codebook's shared memory)
+-#if defined(STRATA_USE_HIP) || defined(STRATA_METAL)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)) || defined(STRATA_METAL)
+     return 1 << 30;
+ #else
+     static std::atomic<int> cache[16];
+@@ -1184,10 +1184,10 @@
+ #include "ds4_iq_hip.inc"
+ template <int T, bool GU>
+ void launch_set(const SetArgs& a, dim3 grid, cudaStream_t s) {
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     if (hipk::launch<T, GU>(a, s)) return;   // (gfx12, STRATA_DS4_HIPK=1: the matrix-core tiles)
+ #endif
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     if (tc_ok()) {
+         strata_ds4_launch(set_tc_kernel<T, GU>, grid, kThreads, 0, s, a);
+         return;
+@@ -1277,7 +1277,7 @@
+ template <int T>
+ void mv_nc(const Jobs& J, int nj, int max_n, int max_c, cudaStream_t s) {
+     const dim3 grid((unsigned) ((max_n + kWarps - 1) / kWarps), (unsigned) nj);
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     // gfx12 (HIP), Q2_K: the 1-column and the 4/16-column instantiations of this GEMV round a column one ulp apart on some outputs
+     // (ds4_gguf_test --rows on p620 and r9700: about 0.4% of the outputs on random data; it depends on the call's column count class
+     // only - not on the neighbours, the column's place, nor the int8 rounding of the activations; cause not found).  Every Q2_K call
+@@ -1437,7 +1437,7 @@
+ // forces it, and only for the types its staging serves (dq_old_ok); anywhere else DS4_DQ_OLD=0 forces kernel2 and DS4_DEFAULTS=026 /
+ // DS4_DQ_OLD=1 keep 0.2.6's kernel.  The detection is the device's gcnArchName (HIP only; a CUDA build has no gfx11).
+ static bool dq_device_is_gfx11() {
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     static std::atomic<int> cache[64];   // 0 unknown, 1 no, 2 yes
+     int dev = 0;
+     cudaGetDevice(&dev);
+@@ -1606,7 +1606,7 @@
+ }
+ 
+ bool hipk_force(int mode) {
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     hipk::force_mode().store(mode, std::memory_order_relaxed);
+     return mode < 0 || hipk::ok_device() || mode == 0;
+ #else
+@@ -1615,7 +1615,7 @@
+ #endif
+ }
+ long long hipk_launches() {
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     return hipk::launches().load(std::memory_order_relaxed);
+ #else
+     return -1;
+diff -ruN a/src/dsv41/ds4_iq_hip.inc b/src/dsv41/ds4_iq_hip.inc
+--- a/src/dsv41/ds4_iq_hip.inc	2026-11-09 06:22:26.000000000 +0800
++++ b/src/dsv41/ds4_iq_hip.inc	2026-11-16 02:07:23.000000000 +0800
+@@ -7,7 +7,7 @@
+ // double-buffered, one barrier a step.  The F32 FMA tile of today (set_kernel) decodes the weights once per 64 rows and does
+ // scalar FMAs.  Default ON for gfx12, STRATA_DS4_HIPK=0 switches it off (gfx12 only, the types below, experts of more than 16 rows).
+ #pragma once
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+ 
+ namespace hipk {
+ // test hooks: force_mode -1 = the default rules, 0 = never, 1 = on wherever the device has the WMMA tiles (gfx11 / gfx12); launches counts the tiles taken
+diff -ruN a/src/dsv41/ds4_kernels.cu b/src/dsv41/ds4_kernels.cu
+--- a/src/dsv41/ds4_kernels.cu	2026-11-09 06:22:26.000000000 +0800
++++ b/src/dsv41/ds4_kernels.cu	2026-11-16 02:07:23.000000000 +0800
+@@ -77,7 +77,7 @@
+ // 32-bit loads)
+ template <class T>
+ __device__ __forceinline__ T ld_fresh(const T* p) {
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     T v;
+     const volatile uint32_t* s = (const volatile uint32_t*) p;
+     uint32_t* d = (uint32_t*) &v;
+@@ -1085,7 +1085,7 @@
+             const int n = min(kStage, nt - s0);
+             stage(t0, s0, n);
+             __syncthreads();
+-#if !defined(STRATA_USE_HIP)   // (HIP leaves a loop with shuffles and a remainder rolled anyway)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))   // (HIP leaves a loop with shuffles and a remainder rolled anyway)
+ #pragma unroll 2
+ #endif
+             for (int r = wr; r < n; r += W) {   // (two rows' chains at once)
+@@ -1163,7 +1163,7 @@
+ // heads' softmaxes and their 512-dim outputs are its rows).  The QK and PV sums are the matrix cores' order, not
+ // sparse_attn_packed_kernel's scalar lanes' - hence opt-in (DS4_FAST_ATTN).
+ // (HIP only: the CUDA build keeps the scalar kernels, so this and the dispatch below compile out there.)
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+ constexpr int kFaHeads = 16;   // heads a tile (the matrix's rows)
+ constexpr int kFaKeys = 16;    // keys a tile
+ constexpr int kFaD = 512;      // the head dim
+@@ -1509,7 +1509,7 @@
+         *tok = bi;
+     }
+     __syncthreads();
+-#if defined(STRATA_USE_HIP)   // (E is fixed once loaded: a plain load is as fresh)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))   // (E is fixed once loaded: a plain load is as fresh)
+     for (int i = threadIdx.x; i < R; i += blockDim.x) erow[i] = E[(size_t) pick * R + i];
+ #else
+     for (int i = threadIdx.x; i < R; i += blockDim.x) erow[i] = __ldcv(E + (size_t) pick * R + i);
+@@ -2070,7 +2070,7 @@
+ // KL 0.10833 against 0.10925 for the scalar path.  gfx1151 on Windows was the untested part; measured on Strix Halo 2026-10-28
+ // (32K prompt, 2.00 bpw): 101.6 -> 70.8 s (+43.6%), the sparse-attention stage 38.3 -> 7.0 s, the same greedy first token
+ // (27408,), so it joins the default there and stays opt-in on every other gfx11 part.
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+ bool device_is_gfx12() {
+     static std::atomic<int> cache[64];   // 0 unknown, 1 no, 2 yes
+     int dev = 0;
+@@ -2108,7 +2108,7 @@
+         const char* e = std::getenv("DS4_FAST_ATTN");
+         return e == nullptr ? -1 : (std::atoi(e) != 0 ? 1 : 0);
+     }();
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+ #if defined(_WIN32)
+     return strata::ds4::fast_attn_default(env, device_is_gfx12(), device_is_gfx1151win(), strata::ds4::defaults_026());
+ #else
+@@ -2514,7 +2514,7 @@
+ #endif
+         strata_ds4_launch(unpack_sel_kernel, dim3(cdiv(sel_stride, kStage), T), kThreads, 0, s, (const uint8_t*) ckv, sel, sel_stride, a,
+                                                                                scr->cap, scr->rows);
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+         if (T == 1)   // (V100: the loads ahead pay for the decode's kernel at one query, not at more)
+             strata_ds4_launch(sparse_attn_kernel<true, 8>, dim3(heads, T), kThreads, 0, s, q, win, scr->rows, nullptr, scr->cap, a, sink,
+                                                                              heads, d, scale, out);
+@@ -2526,7 +2526,7 @@
+     }
+     // DS4_FAST_ATTN=1: the chunked prompt's matrix-core path (16 heads a block, a 16-key tile).  The decode and the
+     // verify windows keep the scalar kernels: one query's heads are not the matrix's rows there.
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     if (fast_attn_enabled() && a.gen != 0 && T >= kFaKeys && heads % kFaHeads == 0) {
+         strata_ds4_launch(sparse_attn_wmma_kernel, dim3(heads / kFaHeads, T), kThreads, 0, s, q, win, (const uint8_t*) ckv, sel, sel_stride,
+                                                                               a, sink, heads, scale, out);
+diff -ruN a/src/dsv41/ds4_model.cu b/src/dsv41/ds4_model.cu
+--- a/src/dsv41/ds4_model.cu	2026-11-09 06:22:26.000000000 +0800
++++ b/src/dsv41/ds4_model.cu	2026-11-16 02:07:23.000000000 +0800
+@@ -39,7 +39,7 @@
+ #include "strata/kernels/f16_bits.hpp"
+ #include "strata/dsv41/moe_win.hpp"
+ #include "strata/dsv41/sampler.hpp"
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+ #include "wmma_gemm.h"   // strata_pf_gemm_f16_ld: the RDNA3 WMMA dense GEMM (gemm() prefers it over hipBLAS on gfx11; -Isrc/prefill)
+ #endif
+ 
+@@ -272,7 +272,7 @@
+ // (measured on a GB10: 55 GB "free" with 115 GB available).  Not on HIP: a Strix Halo's GPU memory is its carve-out plus
+ // the GTT pool, which hipMemGetInfo already counts and MemAvailable may exceed
+ size_t uma_free(int dev, size_t fr) {
+-#if !defined(_WIN32) && !defined(STRATA_USE_HIP)
++#if !defined(_WIN32) && !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     int integrated = 0;
+     if (cudaDeviceGetAttribute(&integrated, cudaDevAttrIntegrated, dev) != cudaSuccess) {
+         (void) cudaGetLastError();
+@@ -1066,7 +1066,7 @@
+     bool rdna4() const {
+         if (all_gfx12 < 0) {
+             bool yes = false;
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+             yes = !devs.empty();
+             for (const auto& d : devs) {
+                 cudaDeviceProp prop{};
+@@ -3795,7 +3795,7 @@
+         // On by default for a Windows HIP build on an APU (Strix Halo: measured +7.5% decode, no change in the prompt); DS4_NO_VIEW=1 forces it
+         // on anywhere, DS4_NO_VIEW=0 turns it off
+         bool no_view = std::getenv("DS4_NO_VIEW") != nullptr && std::atoi(std::getenv("DS4_NO_VIEW")) != 0;
+-#if defined(_WIN32) && defined(STRATA_USE_HIP)
++#if defined(_WIN32) && (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+         if (std::getenv("DS4_NO_VIEW") == nullptr && !devs.empty()) {
+             cudaDeviceProp vp{};
+             no_view = cudaGetDeviceProperties(&vp, devs[0].id) == cudaSuccess && vp.integrated != 0;
+@@ -4174,7 +4174,7 @@
+     bool gemm(Dev& d, Chunk& c, const x3::Mat& m, const uint16_t* x16, int ldx, int rows, float* y, int ldy, float beta,
+               std::string& err) {
+         if (rows <= 0) return true;
+-#if defined(STRATA_USE_HIP)   // (wmma_gemm.cu is part of the AMD builds only: a CUDA build has no such kernel and keeps cuBLAS)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))   // (wmma_gemm.cu is part of the AMD builds only: a CUDA build has no such kernel and keeps cuBLAS)
+         static const bool pf = strata::ds4::dense_pfgemm_default(env_tri("STRATA_DENSE_PFGEMM"), defaults_026());
+ #endif
+         const int cols = std::max(128, (int) std::min<size_t>((size_t) m.n, c.w16_elems / (size_t) m.k) / 128 * 128);
+@@ -4182,7 +4182,7 @@
+             const int nc = std::min(cols, m.n - c0);
+             if (m.fmt != 0) gg::rows(nc == m.n ? m : gg::view(m, c0, nc), c.w16, false, d.st);   // (a GGUF's)
+             else x3::reconstruct_rows(nc == m.n ? m : x3::view(m, c0, nc), c.w16, false, d.st);
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+             if (pf && rows >= 64 && ((uintptr_t) x16 & 15u) == 0 &&
+                 strata_pf_gemm_f16_ld(x16, ldx, c.w16, m.k, y + c0, rows, nc, m.k, ldy, beta, d.st))
+                 continue;
+@@ -4212,7 +4212,7 @@
+         return n;
+     }
+     bool fat_ready(Dev& d, Chunk& c, int D, int FF) {
+-#if defined(STRATA_USE_HIP) || defined(STRATA_METAL)   // (CUDA only: the Mac has no dispatch for these kernels, HIP is unmeasured)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)) || defined(STRATA_METAL)   // (CUDA only: the Mac has no dispatch for these kernels, HIP is unmeasured)
+         (void) d, (void) c, (void) D, (void) FF;
+         return false;
+ #else
+@@ -6059,7 +6059,7 @@
+     // Windows' one-GPU path pins by need by default (STRATA_DS4_PIN_BY_NEED=0 turns it off): WDDM locks about half
+     // the RAM, so pinning every copy fails, and its mapped pointer (one GPU) is what pin by need already takes
+     bool pin_by_need() const {
+-#if defined(_WIN32) && !defined(STRATA_USE_HIP)
++#if defined(_WIN32) && !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+         const char* v = std::getenv("STRATA_DS4_PIN_BY_NEED");
+         if (ln_one && (v == nullptr || v[0] == '\0')) return true;
+ #endif
+@@ -6104,7 +6104,7 @@
+     void one_gpu_path() {
+         bool one = false;
+         const char* why = "off (v1.1.27's path: not NVIDIA + one GPU)";
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+         one = devs.size() == 1 && groups.size() == 1 && groups[0].mem.size() == 1;   // (Maya also required no helper GPU, #415: not ported)
+         if (one) {
+             cudaDeviceProp pr{};
+@@ -6586,7 +6586,7 @@
+             cfg.map_chunk = [dev0](void* h, size_t n) -> void* {
+                 cudaSetDevice(dev0);
+                 unsigned reg_flags = cudaHostRegisterMapped | cudaHostRegisterPortable;
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+                 // (test arm: DS4_ZC_COARSE=1, hipExtHostRegisterCoarseGrained, which ROCm Core SDK 10.1 honors on Windows; the store is read-only to the GPU)
+                 if (std::getenv("DS4_ZC_COARSE") && std::atoi(std::getenv("DS4_ZC_COARSE")) != 0) reg_flags |= 0x8u;
+ #endif
+diff -ruN a/src/dsv41/ds4_numerics.cuh b/src/dsv41/ds4_numerics.cuh
+--- a/src/dsv41/ds4_numerics.cuh	2026-11-09 06:22:26.000000000 +0800
++++ b/src/dsv41/ds4_numerics.cuh	2026-11-16 02:07:23.000000000 +0800
+@@ -7,7 +7,7 @@
+ 
+ #include <cstdint>
+ #include <cuda_runtime.h>
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+ #include <cuda_bf16.h>
+ #include <cuda_fp16.h>
+ #include <cuda_fp8.h>
+@@ -27,7 +27,7 @@
+ 
+ /// An E4M3 code's value (exact in F32).
+ __device__ __forceinline__ float e4m3_value(uint8_t q) {
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     const __half_raw h = __nv_cvt_fp8_to_halfraw((__nv_fp8_storage_t) q, __NV_E4M3);
+     return __half2float(__half(h));
+ #else
+@@ -42,7 +42,7 @@
+ 
+ /// v rounded to the nearest E4M3 value (ties to even), saturated at +-448.
+ __device__ __forceinline__ float e4m3_round(float v) {
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     const __nv_fp8_storage_t q = __nv_cvt_float_to_fp8(v, __NV_SATFINITE, __NV_E4M3);
+     const __half_raw h = __nv_cvt_fp8_to_halfraw(q, __NV_E4M3);
+     return __half2float(__half(h));
+diff -ruN a/src/dsv41/ds4_pcie.cuh b/src/dsv41/ds4_pcie.cuh
+--- a/src/dsv41/ds4_pcie.cuh	2026-11-09 06:22:26.000000000 +0800
++++ b/src/dsv41/ds4_pcie.cuh	2026-11-16 02:07:23.000000000 +0800
+@@ -46,7 +46,7 @@
+ // the device's clock in ns (NVIDIA's globaltimer; HIP's wall clock, 100 MHz on gfx11/gfx12); 0 on other AMD GPUs,
+ // whose wall clock may tick at another rate - the host then times the pull itself
+ __device__ __forceinline__ unsigned long long pull_clock() {
+-#if !defined(STRATA_USE_HIP) && !defined(STRATA_METAL)   // (NVIDIA only; Metal and other AMD take the host-timed path)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)) && !defined(STRATA_METAL)   // (NVIDIA only; Metal and other AMD take the host-timed path)
+     unsigned long long t;
+     asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+     return t;
+diff -ruN a/src/dsv41/ds4_tq.cu b/src/dsv41/ds4_tq.cu
+--- a/src/dsv41/ds4_tq.cu	2026-11-09 06:22:26.000000000 +0800
++++ b/src/dsv41/ds4_tq.cu	2026-11-16 02:07:23.000000000 +0800
+@@ -22,11 +22,11 @@
+ #include <cstdio>
+ #include <cstdlib>
+ 
+-#if defined(STRATA_USE_HIP) && !defined(DS4_TQ_PORTABLE) && (defined(__GFX12__) || defined(__gfx1200__) || defined(__gfx1201__))
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)) && !defined(DS4_TQ_PORTABLE) && (defined(__GFX12__) || defined(__gfx1200__) || defined(__gfx1201__))
+ #define DS4_TQ_WMMA 1
+ #endif
+ 
+-#if !defined(STRATA_USE_HIP) && defined(__CUDACC__)   // (HIP's non-sync shuffle name, for the portable lane on CUDA)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)) && defined(__CUDACC__)   // (HIP's non-sync shuffle name, for the portable lane on CUDA)
+ #define __shfl_xor(v, m) __shfl_xor_sync(0xffffffffu, (v), (m))
+ #endif
+ namespace strata::ds4::gguf::iq::tq {
+diff -ruN a/src/dsv41/ds4_wmma.cuh b/src/dsv41/ds4_wmma.cuh
+--- a/src/dsv41/ds4_wmma.cuh	2026-11-09 06:22:26.000000000 +0800
++++ b/src/dsv41/ds4_wmma.cuh	2026-11-16 02:07:23.000000000 +0800
+@@ -4,7 +4,7 @@
+ // column lane % 16.
+ #pragma once
+ #include <cstdint>
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+ #include <hip/hip_runtime.h>
+ 
+ using h16v = _Float16 __attribute__((ext_vector_type(16)));
+diff -ruN a/src/dsv41/vendor/exl3.cu b/src/dsv41/vendor/exl3.cu
+--- a/src/dsv41/vendor/exl3.cu	2026-11-09 06:22:26.000000000 +0800
++++ b/src/dsv41/vendor/exl3.cu	2026-11-16 02:07:23.000000000 +0800
+@@ -37,7 +37,7 @@
+ #include <mutex>
+ #include <utility>
+ 
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+ namespace strata::dsv41k::exl3::legacy {   // exl3_legacy.cu: v1.1.8's decode kernels
+ int launch_errors();
+ bool prepare(cudaStream_t s);
+@@ -81,7 +81,7 @@
+ 
+ // ---------------------------------------------------------------- the codebooks
+ __device__ __forceinline__ uint32_t bytesum_plus(uint32_t x, uint32_t acc) {
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     return acc + (x & 0xffu) + ((x >> 8) & 0xffu) + ((x >> 16) & 0xffu) + (x >> 24);
+ #else
+     return __dp4a(x, 0x01010101u, acc);
+@@ -267,7 +267,7 @@
+ // with a __syncthreads (out complete).
+ constexpr int kTok = 8;   // activations a block takes at once (the MMA's n)
+ 
+-#if !defined(STRATA_USE_HIP) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+ #define EXL3_TC 1
+ #endif
+ 
+@@ -343,7 +343,7 @@
+ template <int K>
+ constexpr int kMinBlocksMv = 2;
+ #endif
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+ #define EXL3_BOUNDS(n) __launch_bounds__(kThreads)
+ #else
+ #define EXL3_BOUNDS(n) __launch_bounds__(kThreads, n)
+@@ -916,7 +916,7 @@
+ // straight into mma.m16n8k16's B fragments - a lane's 8 steps ARE the fragment order (steps 0,1 / 2,3 rows 2t+{0,1} /
+ // 2t+8+{0,1} of column g, steps 4..7 the same of column g + 8) - and multiplies every m-tile of the block with them.
+ // The output rotation and svh run on the F32 tile in shared memory.
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+ namespace tc {
+ 
+ constexpr int BM = 32, MT = BM / 16, AP = 136;   // rows a block, its m-tiles, the A rows' pitch (halves)
+@@ -1188,7 +1188,7 @@
+             m.trellis, m.ld > 0 ? m.ld : m.n / 16, m.suh, m.svh, m.k, dst, bf16);
+     }
+ };
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+ template <int K, int cb> struct RunGemm {
+     static void run(const tc::GArgs& a, dim3 grid, cudaStream_t s) { strata_ds4_launch(tc::gemm_kernel<K, cb>, grid, kThreads, 0, s, a); }
+ };
+@@ -1270,7 +1270,7 @@
+ // token path and the verify windows take the same family on a device, so a window stays bit for bit its token path.
+ // Asked once per device.
+ bool use_legacy() {
+-#if defined(STRATA_USE_HIP) || defined(STRATA_METAL)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)) || defined(STRATA_METAL)
+     // HIP has no v1.1.8 kernels.  Metal has neither them nor a compute capability to ask for: the shim answers
+     // cudaDeviceGetAttribute with an error, so `major` stayed 0 and every Metal run without STRATA_GLM_EXL3_DECODE=new
+     // took this branch and aborted in exl3::legacy::prepare's stub.  The 2.25 bpw pack never uses EXL3.
+@@ -1371,7 +1371,7 @@
+ 
+ int mv_cols(const Mat& m) {
+     if (!supported(m)) return 0;
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     if (use_legacy()) return 4;   // (v1.1.8's kernels: the runs of four their callers have always used)
+ #endif
+     const int S = mv_splits(m);
+@@ -1381,7 +1381,7 @@
+ }
+ 
+ int launch_errors() {
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     return g_launch_errors.load(std::memory_order_relaxed) + legacy::launch_errors();
+ #else
+     return g_launch_errors.load(std::memory_order_relaxed);
+@@ -1598,7 +1598,7 @@
+ }
+ 
+ bool mma_supported() {
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     return false;
+ #else
+     int dev = 0, major = 0;
+@@ -1610,7 +1610,7 @@
+ 
+ void set_gate_up(const SetArgs& sa, const float* x, int ldx, const int* row_idx, uint16_t* h16, int ldh,
+                  cudaStream_t s) {
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     if (sa.lay.K[0] != sa.lay.K[1]) {
+         std::fprintf(stderr, "exl3 set_gate_up: gate K %d != up K %d\n", sa.lay.K[0], sa.lay.K[1]);
+         g_launch_errors.fetch_add(1, std::memory_order_relaxed);
+@@ -1645,7 +1645,7 @@
+ }
+ 
+ void set_down(const SetArgs& sa, const uint16_t* h16, int ldh, float* y, int ldy, cudaStream_t s) {
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     if (sa.n_exp <= 0 || sa.max_rows <= 0) return;
+     tc::GArgs a{};
+     a.wbase = sa.wbase;
+@@ -1671,7 +1671,7 @@
+ }
+ 
+ void gemm_rows(const Mat& m, const uint16_t* x16, int ldx, int rows, float* y, int ldy, float beta, cudaStream_t s) {
+-#if !defined(STRATA_USE_HIP)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     if (rows <= 0) return;
+     tc::GArgs a{};
+     a.wbase = nullptr;
+diff -ruN a/src/dsv41/vendor/exl3_legacy.cu b/src/dsv41/vendor/exl3_legacy.cu
+--- a/src/dsv41/vendor/exl3_legacy.cu	2026-11-09 06:22:26.000000000 +0800
++++ b/src/dsv41/vendor/exl3_legacy.cu	2026-11-16 02:07:23.000000000 +0800
+@@ -18,7 +18,7 @@
+ //   * a matrix with more than 4096 inputs, or too few output blocks to fill the device, splits its inputs over
+ //     blocks: the partial sums go to a per-stream scratch and the LAST block of an output block adds them up in
+ //     split order (deterministic) and runs the output rotation.
+-#if !defined(STRATA_USE_HIP)   // (AMD runs exl3.cu's kernels; EXL3 does not run there anyway)
++#if !(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))   // (AMD runs exl3.cu's kernels; EXL3 does not run there anyway)
+ #include "../ds4_launch.h"   // strata_ds4_launch: <<<>>> on CUDA and HIP, a dispatch on Metal
+ #include "strata/dsv41/exl3.hpp"
+ 
+@@ -56,7 +56,7 @@
+ 
+ // ---------------------------------------------------------------- the codebooks
+ __device__ __forceinline__ uint32_t bytesum_plus(uint32_t x, uint32_t acc) {
+-#if defined(STRATA_USE_HIP)
++#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))
+     return acc + (x & 0xffu) + ((x >> 8) & 0xffu) + ((x >> 16) & 0xffu) + (x >> 24);
+ #else
+     return __dp4a(x, 0x01010101u, acc);

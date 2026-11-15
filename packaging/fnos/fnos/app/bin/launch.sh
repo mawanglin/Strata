@@ -155,6 +155,30 @@ if [ -d "${APPDEST}/dsv41" ]; then
     done
 fi
 
+# 升级 fpk 时引擎版本号可能没变、内容变了（比如 gfx906 组件加进了 strata-dsv41）：宿主看到同版本已装就保留旧的
+# （apps/host/server/bundled-engine.mjs）。所以包里带的组件和已装的同名组件清单不一样时，先删掉已装的那份
+# （它就是本包上次放进去的副本），宿主启动时按新包重新装。别的版本、用户自己装的引擎不动。
+if [ "${1:-}" != exec ] && [ -d "${STRATA_ENGINE_BUNDLE_DIR}" ]; then   # (只在启动应用时；终端命令 bin/strata 不动)
+    for b in "${STRATA_ENGINE_BUNDLE_DIR}"/*/; do
+        b="${b%/}"; n="$(basename "${b}")"; inst="${STRATA_COMPONENTS_DIR}/engine/${n}"
+        [ -f "${b}/engine-component.json" ] && [ -f "${inst}/engine-component.json" ] || continue
+        if ! cmp -s "${b}/engine-component.json" "${inst}/engine-component.json"; then
+            rm -rf "${inst}" && log "bundled engine ${n} differs from the installed copy: the installed copy was removed, the new one is installed at start"
+        fi
+    done
+fi
+
+# gfx906 版：DeepSeek V4.1 引擎是本包自己编的（packaging/fnos/gfx906/patches/0002-dsv41-on-gfx906.patch），和主引擎在同一个引擎组件里、
+# 共用 ROCm 库；没有上游签名，所以用 Control 的 STRATA_DSV41_EXE（“自己编的引擎”）指给它。组件第一次启动时才从 engine-bundle
+# 复制到 components/engine/，所以按组件目录名算出最终位置（文件还没到时 Control 当作“没有 DeepSeek 引擎”）。
+if [ "${STRATA_FPK_VARIANT}" = gfx906 ] && [ -z "${STRATA_DSV41_EXE:-}" ]; then
+    for d in "${STRATA_COMPONENTS_DIR}"/engine/*-hip-gfx906 "${APPDEST}"/engine-bundle/*-hip-gfx906; do
+        [ -d "${d}" ] || continue
+        export STRATA_DSV41_EXE="${STRATA_COMPONENTS_DIR}/engine/$(basename "${d}")/strata-dsv41"
+        break
+    done
+fi
+
 if [ "${1:-}" = "exec" ]; then
     shift
     exec "$@"

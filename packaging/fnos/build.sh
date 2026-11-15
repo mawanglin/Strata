@@ -28,8 +28,9 @@ UPSTREAM_REPO="${UPSTREAM_REPO:-Niko1221/Strata}"
 UPSTREAM_TAG="${UPSTREAM_TAG:-v0.2.13}"
 CONTROL_ASSET="${CONTROL_ASSET:-strata-control-0.1.59.1-linux-x86_64.tar.gz}"
 ENGINE_ASSET="${ENGINE_ASSET:-strata-engine-0.1.59-linux-x86_64-cuda-cuda13.tar.gz}"
-# DeepSeek V4.1 的引擎是单独的组件（只有 CUDA 版；上游的 gfx906 构建明确不含它）。原样放进包里，启动时放到
-# <install>/engine-dsv41/，用户选 DeepSeek 时 Strata 自己核对上游签名后安装，不用联网下载。
+# DeepSeek V4.1 的引擎：CUDA 版是上游单独的组件，原样放进包里，启动时放到
+# <install>/engine-dsv41/，用户选 DeepSeek 时 Strata 自己核对上游签名后安装，不用联网下载。gfx906 版的 strata-dsv41 是本包自己编的，
+# 在 gfx906 引擎组件里（gfx906/build-engine.sh），launch.sh 用 STRATA_DSV41_EXE 指给 Strata。
 DSV41_ASSET="${DSV41_ASSET:-strata-dsv41-0.1.59-linux-x86_64-cuda-cuda13.tar.gz}"
 NODE_VERSION="${NODE_VERSION:-24.12.0}"
 # nodejs.org 的 SHASUMS256.txt 里 v24.12.0 linux-x64 的值（和 apps/desktop/scripts/fetch-node.sh 记录的一致）。

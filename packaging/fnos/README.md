@@ -142,6 +142,7 @@ sudo /var/apps/strata/target/bin/strata --help
 - 第一次 `appcenter-cli start` 返回过一次 `Failed to launch app. error code 10500`，但应用中心日志里这次启动是 `success`，应用也确实起来了，之后的 start / stop 都正常；原因没查清。
 - **不在线更新程序**：引擎、Control、DeepSeek 引擎都随 fpk 走（`launch.sh` 设 `STRATA_FPK_NO_UPDATES=1`，`patches/0002-no-online-updates.patch`）。设置里没有“更新引擎 / 更新 Strata”，“检查更新”返回“请安装更新的 fpk”，更新操作会被拒绝。**模型、读图文件、DFlash2 草稿模型照常下载**（它们是数据，不是程序）。从本地文件安装引擎（离线、手动）仍然可以。实测：关掉后装模型、加载、推理都正常。
 - 宿主第一次启动会把 `engine-bundle` 里的引擎复制到应用数据的 `components/`，之后会删掉安装目录里的那份（日志有说明），所以占用的是应用数据里的 1.2 GB。
+- **升级时引擎版本号没变、内容变了**（比如 gfx906 组件加进了 `strata-dsv41`）：上游宿主看到同版本已装就保留旧的。`launch.sh` 在启动时比较包里和已装的同名组件的清单（`engine-component.json`），不一样就删掉已装的那份，宿主再按新包装（日志：`bundled engine ... differs from the installed copy`）。别的版本、用户自己装的引擎不动；终端命令 `bin/strata` 不触发。cob.11 → cob.12 实测：旧组件被换掉，`strata-dsv41` 到位。
 - **图片要在模型准备时开启**：模型当初没开图片就装了的话，之后加载时开图片不会自动补文件（服务端会报 “started without the vision encoder”）。在界面里带图片重新准备一次这个模型即可，只补下读图文件（约 1 GB），不会重下模型本体。
 - **Qwen3.8-Flash-Next IQ3_XXS**（2026-11-15，RTX 3060 12 GB）：gfx906 版下载进共享模型库后，NVIDIA 版“安装”只用 31 秒（不下载）；128K 上下文加载 236 秒（专家在内存里，显存只放一部分），同时 2 个请求。和 MI50 上同样的四项测试：
 
@@ -191,6 +192,7 @@ sudo /var/apps/strata/target/bin/strata --help
 | 补丁 | 打在哪 | 作用 |
 |---|---|---|
 | `gfx906/patches/0001-hip-compat-stream-priority.patch` | 引擎源码 | gfx906 兼容层缺 `cudaStreamCreateWithPriority`、`cudaDeviceGetStreamPriorityRange` 的映射，`src/core/dflash2.cpp` 编不过；补两行 `#define`。上游到现在的 HEAD 也没补 |
+| `gfx906/patches/0002-dsv41-on-gfx906.patch` | 引擎源码 | 让 DeepSeek 引擎 `strata-dsv41` 能编给 gfx906，见下面“gfx906 上的 DeepSeek V4.1”。只动 DeepSeek 自己的源码和 CMake 段，主引擎 `strata` 编出来和以前逐字节相同（sha256 核对过） |
 | `patches/control/0001-gfx906-opt-in-and-backend.patch` | Control 的 `setup.py` | ① 加开关 `STRATA_EXPERIMENTAL_GFX906=1`（照上游 gfx1103 / gfx1150 的写法），把 gfx906 加进 AMD 支持名单；② 安装时没指定后端就用 `STRATA_ENGINE_BACKEND`，否则同时有 NVIDIA 卡的机器会默认装成 CUDA |
 | `patches/0001-gpu-vendor.patch` | 宿主 | 只保留本变体厂商的卡（两个变体共用） |
 | `patches/0002-no-online-updates.patch` | 宿主 | 关掉引擎 / Control 的在线更新（两个变体共用） |
@@ -200,7 +202,7 @@ sudo /var/apps/strata/target/bin/strata --help
 
 `launch.sh` 按 `bin/variant.env`（构建时写入）设置：gfx906 版 `STRATA_FPK_GPU_VENDOR=amd`、`STRATA_ENGINE_BACKEND=hip`、`STRATA_EXPERIMENTAL_GFX906=1`，不链接任何宿主机的库。
 
-**能跑哪些模型**：这个引擎只有 `qwen4exp` 一个系列（`strata --families`），也就是 **Qwen3.8-Flash-Next 及其 Coder / Swift / Unsloth / Gyro 等量化**。**Qwen3.6-35B-A3B 不在 gfx906 构建里**（上游文档也这么说），目录里虽然列着，但装了也跑不起来。最小可用的是 Coder IQ1_M（58.4 GB）。**DeepSeek V4.1 也不支持**：上游的 CMake 明确写着 `STRATA_BUILD_DSV41 AND NOT STRATA_HIP_GFX906`，要支持得移植它的内核，不是打包能解决的。
+**能跑哪些模型**：这个引擎只有 `qwen4exp` 一个系列（`strata --families`），也就是 **Qwen3.8-Flash-Next 及其 Coder / Swift / Unsloth / Gyro 等量化**。**Qwen3.6-35B-A3B 不在 gfx906 构建里**（上游文档也这么说），目录里虽然列着，但装了也跑不起来。最小可用的是 Coder IQ1_M（58.4 GB）。**DeepSeek V4.1 由本包自己移植**（上游的 CMake 明确写着 `STRATA_BUILD_DSV41 AND NOT STRATA_HIP_GFX906`，不给 gfx906 编），见下面“gfx906 上的 DeepSeek V4.1”。
 
 ### gfx906 实测（2026-11-15，同一台 NAS，Instinct MI50 32 GB，和 RTX 3060 同机）
 
@@ -223,6 +225,39 @@ sudo /var/apps/strata/target/bin/strata --help
 
   和 Coder IQ1_M 比：生成慢一些（平均约 40 对 60 tok/s），但量化精度更高，适合日常聊天和推理；Coder 适合写代码。
 - **没有实测**：MI60 和 Radeon VII（同一指令集，没跑过）、多张 gfx906 卡、DFlash2 草稿模型。
+
+### gfx906 上的 DeepSeek V4.1（2026-11-16，本包移植，上游没有）
+
+**怎么做的**：上游给 AMD 写的 DeepSeek 引擎只编给 RDNA 系列（wave32，如 R9700）。MI50 是 wave64，主引擎能跑靠的是 gfx906 兼容层：把一个 64 线程的 wave 当成两个 32 线程的 warp，CUDA 的 shuffle / ballot 都按 32 线程模拟。`gfx906/patches/0002-dsv41-on-gfx906.patch` 让 DeepSeek 引擎也走这条路：
+
+- `src/dsv41` 里所有 `defined(STRATA_USE_HIP)` 改成 `(defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906))`：走上游给 AMD 写的那套分支（FP8 / BF16 用普通算术转换、不用 NVIDIA 的 `globaltimer` 汇编和 `mma.sync`、`nvcuda::wmma` 等）。WMMA 矩阵核心的代码都有 gfx11 / gfx12 的架构条件，在 gfx906 上自动退回普通实现。
+- CMake 允许 `STRATA_BUILD_DSV41` 和 `STRATA_HIP_GFX906` 一起开，DeepSeek 的目标和对拍测试按 HIP 编译，强制引入上游的 `include/strata/dsv41/hip_extra.h`（另补 `cublasSgemm`、`cudaDevAttrIntegrated` 两个映射，并按兼容层用 hipBLAS v2 API）。
+- `src/dsv41/ds4_gfx906_stubs.cpp`：RDNA3 的 WMMA 稠密矩阵乘在 gfx906 上回答“没有”，调用方照常用 hipBLAS（和 `wmma_gemm.cu` 在非 gfx11 构建里的写法一样）。
+- `gfx906/build-engine.sh` 在单独的构建目录里编 `strata-dsv41`，放进同一个引擎组件（共用 ROCm 库），`BUILD.json` 标 `"dsv41": true`。它没有上游签名，所以 `launch.sh` 用 Control 的 `STRATA_DSV41_EXE`（“自己编的引擎”）指给它；组件里的 `BUILD.json` 写着 `archs: ["gfx906"]`，Control 据此认为 MI50 能跑 DeepSeek。
+
+**正确性**（MI50 上跑上游自己的对拍测试，和 CPU / ggml 参考实现比）：
+
+| 测试 | 内容 | 结果 |
+|---|---|---|
+| `ds4_iq_test` | i-quant 专家（IQ1_M、IQ2_XS/S、IQ3_XXS/S、IQ4_XS）的单 token、批量、CPU 通道 | 全部在上游的容差内，`ALL OK` |
+| `ds4_tq_test_portable` | trellis 专家（TQK4X/5X/4T/5T） | `ALL OK` |
+| `ds4_dq_test`（`tests/dsv41/run_dq_test.sh`） | 16 种稠密权重类型 × 新旧内核 × rows / gguf / gemm / mv 路径 | 161 项结果全部 `fail=0`，没有崩溃、没有设备错误 |
+| `tools/dsv41/smoke.py` | 2.00bpw 整个模型出 16 个字 | “The capital of France is Paris.”（第一次从机械硬盘读，334 秒） |
+
+**在应用里实测**（cob.12，模型在共享模型库，机械硬盘 RAIDZ3）：
+
+| 模型 | 安装（文件已有） | 加载 | 结果 |
+|---|---|---|---|
+| ISTA-DAS 2.00 bpw | 296 秒（含 Strata 自己的出字测试） | 272 秒，MI50 显存用满（2864 / 15360 个专家在卡上，其余 108 GB 由 CPU 从模型文件里读） | **约 0.4–0.5 tok/s**：内存只放得下 30 GB 最常用的专家，其余每个字都要从机械硬盘现读（CPU 只用了约 11%，在等硬盘）。非流式请求 5 分钟后报 `fetch failed`（见下） |
+| **ISTA-DAS-Coder** | 60 秒 | **55 秒** | 写 `is_prime` 两次都正确：第一次 34 秒（第一个字 6 秒，之后 **4.9 tok/s**），第二次 15 秒（**8.4 tok/s**）；鸡兔同笼“鸡 23，兔 12”正确，42 秒。引擎统计解码平均 2.6 tok/s、读提示词 7.5 tok/s |
+
+同一个 Coder 包在 RTX 3060（12 GB）上是 2.3–3.2 tok/s（见“已知问题”里 DeepSeek 一条）：MI50 显存大，放在卡上的专家多，所以更快。**想用 DeepSeek 选 Coder**；2.00 / 2.25 bpw 要把模型放到 NVMe 上才有可用的速度。
+
+**限制**：
+
+- 上游有一项单卡解码加速只给 NVIDIA（日志：`the one-GPU decode path ... off (not NVIDIA + one GPU)`）；DSpark 草稿在专家远多于显存时自己不加载（CUDA 版也一样）。
+- **非流式请求超过 5 分钟会失败**（`{"error":{"message":"fetch failed"}}`）：宿主转发 `/v1` 时等响应头最多 5 分钟，引擎其实还在出字。慢模型请用流式（`"stream": true`，Claude Code、Codex、OpenCode 和网页聊天都是流式）。这是上游宿主的行为，CUDA 版一样。
+- 没有测：DeepSeek 的读图、多张 gfx906 卡、MI60 / Radeon VII、长上下文。
 
 **和 ComfyUI（gfx906）共用一张卡**：Strata 加载模型后几乎占满 MI50 的显存，这时 ComfyUI 出图会显存不足；反过来也一样。两个不要同时用，或者在 Strata 里卸载模型（停止应用也行）。
 
@@ -248,6 +283,7 @@ packaging/fnos/tests/test_settings.sh          # 安装 / 设置向导的处理�
 packaging/fnos/tests/test_context_fallback.sh  # Qwen3.6 上下文自动降档的判断，11 项
 packaging/fnos/tests/test_models_dir.sh        # 模型目录的选择（授权目录），8 项
 packaging/fnos/tests/test_port_and_drafter.sh  # 两个应用的引擎端口段、DFlash2 按 HF_ENDPOINT 下载，7 项
+packaging/fnos/tests/test_launch_engine.sh     # 升级时替换内容变了的同版本引擎组件、gfx906 的 STRATA_DSV41_EXE，7 项
 # 都不需要 GPU / 飞牛
 ```
 

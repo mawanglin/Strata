@@ -102,6 +102,21 @@ nice -n 10 cmake --build "${OUT}/b" --target strata -j "${JOBS}" -- -k 0 > "${OU
     || { grep -a "^FAILED" "${OUT}/build.log"; grep -a " error: " "${OUT}/build.log" | sort | uniq | head -40; exit 1; }
 [ -x "${OUT}/b/strata" ] || { echo "no strata binary" >&2; exit 1; }
 
+# DeepSeek V4.1 引擎（strata-dsv41）：上游不给 gfx906 编（CMake 里排除了），本包的 patches/0002-dsv41-on-gfx906.patch 让它走上游 AMD
+# 版的代码分支 + gfx906 的 wave64 兼容层。单独一个构建目录，主引擎的配置一点不变。DSV41=0 跳过。
+if [ "${DSV41:-1}" = 1 ]; then
+    log "DeepSeek engine strata-dsv41 (STRATA_HIP_GFX906, ${ARCH})"
+    cmake -G Ninja -S . -B "${OUT}/bd" -DCMAKE_BUILD_TYPE=Release -DSTRATA_HIP_GFX906=ON -DCMAKE_HIP_ARCHITECTURES="${ARCH}" \
+        -DSTRATA_BUILD_TESTS=OFF -DSTRATA_GGML_DIR="${LLAMA}" -DSTRATA_PORTABLE=ON -DSTRATA_BUILD_DSV41=ON -DSTRATA_NATIVE_EXPERTS=ON \
+        -DCMAKE_C_COMPILER="${HP}/llvm/bin/clang" -DCMAKE_CXX_COMPILER="${HP}/llvm/bin/clang++" "${HIPDEFS[@]}" \
+        "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath,'\$ORIGIN' -Wl,--enable-new-dtags" > "${OUT}/cfg-dsv41.log" 2>&1 \
+        || { tail -40 "${OUT}/cfg-dsv41.log"; exit 1; }
+    nice -n 10 cmake --build "${OUT}/bd" --target strata-dsv41 -j "${JOBS}" -- -k 0 > "${OUT}/build-dsv41.log" 2>&1 \
+        || { grep -a "^FAILED" "${OUT}/build-dsv41.log"; grep -a " error: " "${OUT}/build-dsv41.log" | sort | uniq | head -40; exit 1; }
+    [ -x "${OUT}/bd/strata-dsv41" ] || { echo "no strata-dsv41 binary" >&2; exit 1; }
+    grep -aq "amdgcn-amd-amdhsa--${ARCH}" "${OUT}/bd/strata-dsv41" || { echo "strata-dsv41 has no ${ARCH} code object" >&2; exit 1; }
+fi
+
 log "CPU picture reader (portable)"
 cmake -G Ninja -S tools/vision -B "${OUT}/bv" -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR="${LLAMA}" -DSTRATA_VISION_CUDA=OFF -DSTRATA_PORTABLE=ON \
     > "${OUT}/cfg-vision.log" 2>&1 || { tail -40 "${OUT}/cfg-vision.log"; exit 1; }
@@ -120,17 +135,19 @@ nice -n 10 cmake --build "${OUT}/bh" --target strata-vision -j "${JOBS}" > "${OU
 log "stage: binaries, ROCm libraries, rocBLAS ${ARCH} kernel data"
 STAGE="${OUT}/stage"; rm -rf "${STAGE}"; mkdir -p "${STAGE}"
 cat > "${STAGE}/BUILD.json" <<EOJ
-{"version": "${PKGVER}", "source": "fnos-gfx906 ${COMMIT}", "variant": "gfx906", "archs": ["${ARCH}"], "portable": true, "vision": "gpu", "vision_cpu": "strata-vision", "vision_gpu": "strata-vision-hip", "vision_archs": ["${ARCH}"], "rocm": "${ROCM_VERSION} (TheRock gfx906)", "dsv41": false}
+{"version": "${PKGVER}", "source": "fnos-gfx906 ${COMMIT}", "variant": "gfx906", "archs": ["${ARCH}"], "portable": true, "vision": "gpu", "vision_cpu": "strata-vision", "vision_gpu": "strata-vision-hip", "vision_archs": ["${ARCH}"], "rocm": "${ROCM_VERSION} (TheRock gfx906)", "dsv41": $([ "${DSV41:-1}" = 1 ] && echo true || echo false)}
 EOJ
 DATA=(--data "${LIBW}/lib/rocblas/library=rocblas/library" --data-arch "${ARCH}")
 : > "${OUT}/collect.log"
-for bin in "${OUT}/b/strata" "${OUT}/bh/bin/strata-vision-hip"; do     # 引擎和 GPU 读图器各自要的库（CPU 读图器只用系统库）
+DSV41_BIN=(); [ "${DSV41:-1}" = 1 ] && DSV41_BIN=("${OUT}/bd/strata-dsv41")
+for bin in "${OUT}/b/strata" "${OUT}/bh/bin/strata-vision-hip" "${DSV41_BIN[@]}"; do     # 引擎和 GPU 读图器各自要的库（CPU 读图器只用系统库）
     "${PY}" packaging/collect_libs.py --binary "${bin}" --search "${LIBW}/lib" --search "${HP}/lib" --search "${CORE}/lib" --search "${HP}/lib/llvm/lib" \
         ${SYSDEPS:+--search "${HP}/lib/rocm_sysdeps/lib"} --also 'libamd_comgr.so*' --also 'libhiprtc*.so*' --out "${STAGE}" \
         "${DATA[@]}" >> "${OUT}/collect.log" 2>&1 || { tail -40 "${OUT}/collect.log"; exit 1; }
     DATA=()                                                              # 内核数据只收一次
 done
 cp "${OUT}/b/strata" "${OUT}/bv/bin/strata-vision" "${OUT}/bh/bin/strata-vision-hip" "${STAGE}/"
+[ "${DSV41:-1}" = 1 ] && cp "${OUT}/bd/strata-dsv41" "${STAGE}/"
 for f in "${STAGE}"/*.so "${STAGE}"/*.so.*; do [ -f "$f" ] && [ ! -L "$f" ] && patchelf --set-rpath '$ORIGIN' "$f"; done
 echo "    glibc needed (max): $(for f in "${STAGE}"/strata "${STAGE}"/*.so*; do objdump -T "$f" 2>/dev/null; done | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
 echo "    GLIBCXX needed (max): $(for f in "${STAGE}"/strata "${STAGE}"/*.so*; do objdump -T "$f" 2>/dev/null; done | grep -o 'GLIBCXX_[0-9.]*' | sort -uV | tail -1)"
@@ -144,7 +161,7 @@ log "package"
 rm -rf "${OUT}/components"; mkdir -p "${OUT}/components/engine"
 "${PY}" packaging/package_engine.py --src "${STAGE}" --backend hip --version "${PKGVER}" --out "${OUT}/components/engine" --arch "${ARCH}" \
     --variant gfx906 --platform linux-x86_64 --build-id "${COMMIT:0:12}+rocm${ROCM_VERSION}" --tree \
-    --notes "AMD gfx906 (MI50 / MI60 / Radeon VII) build for the fnOS package: engine, CPU and GPU picture readers, ROCm ${ROCM_VERSION} from TheRock" \
+    --notes "AMD gfx906 (MI50 / MI60 / Radeon VII) build for the fnOS package: engine, DeepSeek engine (strata-dsv41), CPU and GPU picture readers, ROCm ${ROCM_VERSION} from TheRock" \
     > "${OUT}/package.log" 2>&1 || { tail -40 "${OUT}/package.log"; exit 1; }
 for d in "${OUT}"/components/engine/*/; do
     "${PY}" packaging/package_engine.py --verify "$d"
