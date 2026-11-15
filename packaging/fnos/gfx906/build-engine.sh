@@ -107,15 +107,30 @@ cmake -G Ninja -S tools/vision -B "${OUT}/bv" -DCMAKE_BUILD_TYPE=Release -DLLAMA
     > "${OUT}/cfg-vision.log" 2>&1 || { tail -40 "${OUT}/cfg-vision.log"; exit 1; }
 nice -n 10 cmake --build "${OUT}/bv" --target strata-vision -j "${JOBS}" > "${OUT}/build-vision.log" 2>&1 || { tail -40 "${OUT}/build-vision.log"; exit 1; }
 
+# GPU 读图器：llama.cpp 的 ggml-hip，编给 gfx906（上游 build_hip_linux.sh 的做法）。显存 24 GB 起 Strata 默认用 GPU 读图，
+# MI50 / MI60 都在这个范围；读图器起不来时 Strata 自己退回 CPU 读图器。
+log "GPU picture reader (ggml-hip, ${ARCH})"
+cmake -G Ninja -S tools/vision -B "${OUT}/bh" -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR="${LLAMA}" -DSTRATA_VISION_HIP=ON \
+    "-DSTRATA_VISION_HIP_ARCHS=${ARCH}" -DSTRATA_PORTABLE=ON "${HIPDEFS[@]}" > "${OUT}/cfg-vision-hip.log" 2>&1 \
+    || { tail -40 "${OUT}/cfg-vision-hip.log"; exit 1; }
+nice -n 10 cmake --build "${OUT}/bh" --target strata-vision -j "${JOBS}" > "${OUT}/build-vision-hip.log" 2>&1 \
+    || { grep -a " error: " "${OUT}/build-vision-hip.log" | head -20; tail -20 "${OUT}/build-vision-hip.log"; exit 1; }
+[ -x "${OUT}/bh/bin/strata-vision-hip" ] || { echo "no strata-vision-hip" >&2; exit 1; }
+
 log "stage: binaries, ROCm libraries, rocBLAS ${ARCH} kernel data"
 STAGE="${OUT}/stage"; rm -rf "${STAGE}"; mkdir -p "${STAGE}"
 cat > "${STAGE}/BUILD.json" <<EOJ
-{"version": "${PKGVER}", "source": "fnos-gfx906 ${COMMIT}", "variant": "gfx906", "archs": ["${ARCH}"], "portable": true, "vision": "cpu", "vision_cpu": "strata-vision", "rocm": "${ROCM_VERSION} (TheRock gfx906)", "dsv41": false}
+{"version": "${PKGVER}", "source": "fnos-gfx906 ${COMMIT}", "variant": "gfx906", "archs": ["${ARCH}"], "portable": true, "vision": "gpu", "vision_cpu": "strata-vision", "vision_gpu": "strata-vision-hip", "vision_archs": ["${ARCH}"], "rocm": "${ROCM_VERSION} (TheRock gfx906)", "dsv41": false}
 EOJ
-"${PY}" packaging/collect_libs.py --binary "${OUT}/b/strata" --search "${LIBW}/lib" --search "${HP}/lib" --search "${CORE}/lib" --search "${HP}/lib/llvm/lib" \
-    ${SYSDEPS:+--search "${HP}/lib/rocm_sysdeps/lib"} --also 'libamd_comgr.so*' --also 'libhiprtc*.so*' --out "${STAGE}" \
-    --data "${LIBW}/lib/rocblas/library=rocblas/library" --data-arch "${ARCH}" > "${OUT}/collect.log" 2>&1 || { tail -40 "${OUT}/collect.log"; exit 1; }
-cp "${OUT}/b/strata" "${OUT}/bv/bin/strata-vision" "${STAGE}/"
+DATA=(--data "${LIBW}/lib/rocblas/library=rocblas/library" --data-arch "${ARCH}")
+: > "${OUT}/collect.log"
+for bin in "${OUT}/b/strata" "${OUT}/bh/bin/strata-vision-hip"; do     # 引擎和 GPU 读图器各自要的库（CPU 读图器只用系统库）
+    "${PY}" packaging/collect_libs.py --binary "${bin}" --search "${LIBW}/lib" --search "${HP}/lib" --search "${CORE}/lib" --search "${HP}/lib/llvm/lib" \
+        ${SYSDEPS:+--search "${HP}/lib/rocm_sysdeps/lib"} --also 'libamd_comgr.so*' --also 'libhiprtc*.so*' --out "${STAGE}" \
+        "${DATA[@]}" >> "${OUT}/collect.log" 2>&1 || { tail -40 "${OUT}/collect.log"; exit 1; }
+    DATA=()                                                              # 内核数据只收一次
+done
+cp "${OUT}/b/strata" "${OUT}/bv/bin/strata-vision" "${OUT}/bh/bin/strata-vision-hip" "${STAGE}/"
 for f in "${STAGE}"/*.so "${STAGE}"/*.so.*; do [ -f "$f" ] && [ ! -L "$f" ] && patchelf --set-rpath '$ORIGIN' "$f"; done
 echo "    glibc needed (max): $(for f in "${STAGE}"/strata "${STAGE}"/*.so*; do objdump -T "$f" 2>/dev/null; done | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
 echo "    GLIBCXX needed (max): $(for f in "${STAGE}"/strata "${STAGE}"/*.so*; do objdump -T "$f" 2>/dev/null; done | grep -o 'GLIBCXX_[0-9.]*' | sort -uV | tail -1)"
@@ -129,7 +144,7 @@ log "package"
 rm -rf "${OUT}/components"; mkdir -p "${OUT}/components/engine"
 "${PY}" packaging/package_engine.py --src "${STAGE}" --backend hip --version "${PKGVER}" --out "${OUT}/components/engine" --arch "${ARCH}" \
     --variant gfx906 --platform linux-x86_64 --build-id "${COMMIT:0:12}+rocm${ROCM_VERSION}" --tree \
-    --notes "AMD gfx906 (MI50 / MI60 / Radeon VII) build for the fnOS package: engine and CPU picture reader, ROCm ${ROCM_VERSION} from TheRock" \
+    --notes "AMD gfx906 (MI50 / MI60 / Radeon VII) build for the fnOS package: engine, CPU and GPU picture readers, ROCm ${ROCM_VERSION} from TheRock" \
     > "${OUT}/package.log" 2>&1 || { tail -40 "${OUT}/package.log"; exit 1; }
 for d in "${OUT}"/components/engine/*/; do
     "${PY}" packaging/package_engine.py --verify "$d"

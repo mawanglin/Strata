@@ -102,6 +102,20 @@ if [ -d "${APPDEST}/seed/third_party/llama.cpp" ] && [ ! -e "${STRATA_INSTALL_DI
     ln -s "${APPDEST}/seed/third_party/llama.cpp" "${STRATA_INSTALL_DIR}/third_party/llama.cpp"
 fi
 
+# DeepSeek V4.1 的引擎包（只有 CUDA 版带）：放进 <install>/engine-dsv41/，用户选 DeepSeek 时 Strata 核对签名后自己安装。
+# 已经装好（有 strata-dsv41 的版本目录）或包已经在那里，就什么也不做。
+if [ -d "${APPDEST}/dsv41" ]; then
+    DSV41_DIR="${STRATA_INSTALL_DIR}/engine-dsv41"
+    mkdir -p "${DSV41_DIR}"
+    for pkg in "${APPDEST}"/dsv41/strata-dsv41-*.tar.gz; do
+        [ -f "${pkg}" ] || continue
+        ver="$(basename "${pkg}" .tar.gz)"; ver="${ver#strata-dsv41-}"
+        if [ ! -x "${DSV41_DIR}/${ver}/strata-dsv41" ] && [ ! -f "${DSV41_DIR}/$(basename "${pkg}")" ]; then
+            cp "${pkg}" "${DSV41_DIR}/" && log "DeepSeek engine package placed in ${DSV41_DIR} (installed when a DeepSeek model is chosen)"
+        fi
+    done
+fi
+
 if [ "${1:-}" = "exec" ]; then
     shift
     exec "$@"
@@ -148,9 +162,10 @@ if [ ! -s "${HOME_DIR}/.auth.json" ]; then
     exit 1
 fi
 PROXY_PORT="${PORT}" PROXY_UPSTREAM_PORT="${BACKEND_PORT}" PROXY_AUTH_FILE="${HOME_DIR}/.auth.json" \
+    PROXY_API_KEY_FILE="${HOME_DIR}/.api-key.json" \
     "${NODE}" "${APPDEST}/bin/proxy.mjs" &
 CHILD_PIDS+=($!)
-log "web port ${PORT} -> Strata host 127.0.0.1:${BACKEND_PORT}"
+log "web port ${PORT} -> Strata host 127.0.0.1:${BACKEND_PORT} (API key access: $([ -s "${HOME_DIR}/.api-key.json" ] && echo on || echo off))"
 
 # 宿主意外退出（内存不足被杀、崩溃……）时重启：${MAX_RESTARTS} 次 / ${RESTART_WINDOW} 秒，间隔递增；
 # 超过就放弃并停止应用，避免起不来的东西无限循环。被要求停止（TERM）不会重启。

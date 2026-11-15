@@ -6,6 +6,7 @@ LOG_FILE="${TRIM_PKGVAR}/strata.log"
 PID_FILE="${TRIM_PKGVAR}/strata.pid"
 SETTINGS_FILE="${TRIM_PKGVAR}/settings.env"
 AUTH_FILE="${TRIM_PKGVAR}/home/.auth.json"
+API_KEY_FILE="${TRIM_PKGVAR}/home/.api-key.json"
 LOG_MAX_BYTES="${STRATA_LOG_MAX_BYTES:-$((10 * 1024 * 1024))}"
 LOG_KEEP=2                                          # 保留的历史日志：strata.log.1 … .N
 LOG_CHECK_SECONDS="${STRATA_LOG_CHECK_SECONDS:-60}"
@@ -74,6 +75,7 @@ apply_wizard_settings() {
     local source="${wizard_source:-hf-mirror}"
     local custom="${wizard_endpoint:-}"
     local endpoint="" ms=""
+    local api="${wizard_api:-false}"
 
     [[ "${port}" =~ ^[0-9]+$ ]] && [ "${port}" -ge 1024 ] && [ "${port}" -le 65535 ] \
         || fail "端口无效：${port}"
@@ -88,6 +90,7 @@ apply_wizard_settings() {
             endpoint="${custom%/}" ;;
         *) fail "模型下载源无效：${source}" ;;
     esac
+    [[ "${api}" =~ ^(true|false)$ ]] || fail "API 访问设置无效：${api}"
 
     mkdir -p "${TRIM_PKGVAR}/home"
     fix_owner "${TRIM_PKGVAR}"
@@ -101,6 +104,20 @@ apply_wizard_settings() {
         fail "需要设置访问密码"
     elif ! grep -q "\"user\": *\"${user}\"" "${AUTH_FILE}"; then
         fail "修改用户名时需要同时输入新密码"
+    fi
+
+    # API Key（只用于 /v1 接口；网页仍用用户名密码）。关闭时删掉；开启时没输入新 Key 就沿用已保存的。
+    if [ "${api}" = "true" ]; then
+        if [ -n "${wizard_api_key:-}" ]; then
+            printf '%s\n' "${wizard_api_key}" \
+                | exec_as_app_user "${TRIM_APPDEST}/node/bin/node" "${TRIM_APPDEST}/bin/set-api-key.mjs" "${API_KEY_FILE}" \
+                >> "${LOG_FILE}" 2>&1 || fail "API Key 无效：至少 16 位，只能是字母、数字、- 和 _"
+            log_msg "API key set"
+        elif [ ! -s "${API_KEY_FILE}" ]; then
+            fail "开启 API 访问时需要设置 API Key"
+        fi
+    else
+        rm -f "${API_KEY_FILE}"
     fi
 
     {

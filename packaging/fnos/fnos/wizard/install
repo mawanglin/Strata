@@ -99,5 +99,41 @@
                 ]
             }
         ]
+    },
+    {
+        "stepTitle": "API 访问（可选）",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "给 Claude Code、Codex、OpenCode 等程序当本地模型后端用：它们访问 <b>http://NAS-IP:端口/v1</b>（OpenAI 兼容）或 <b>http://NAS-IP:端口</b>（Anthropic 兼容），用下面的 API Key 认证（放在 <b>Authorization: Bearer</b> 或 <b>x-api-key</b> 里）。只对 /v1 接口有效，网页仍然用用户名密码登录。也是明文 HTTP，只在可信局域网里用。不要再在 Strata 网页设置里另设 API Key，否则两边对不上。"
+            },
+            {
+                "type": "radio",
+                "field": "wizard_api",
+                "label": "API Key 访问",
+                "initValue": "false",
+                "options": [
+                    {
+                        "label": "关闭：只有登录网页的人能用",
+                        "value": "false"
+                    },
+                    {
+                        "label": "开启：程序可以用 API Key 调用 /v1 接口",
+                        "value": "true"
+                    }
+                ]
+            },
+            {
+                "type": "password",
+                "field": "wizard_api_key",
+                "label": "API Key（开启时必填；至少 16 位，字母、数字、- 和 _）",
+                "rules": [
+                    {
+                        "pattern": "^([A-Za-z0-9_-]{16,128})?$",
+                        "message": "至少 16 位，只能是字母、数字、- 和 _"
+                    }
+                ]
+            }
+        ]
     }
 ]

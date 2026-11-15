@@ -18,7 +18,8 @@
 | 网页界面和宿主（Node 服务） | 上游 release 标签 `v0.2.13` 的 `apps/host`，构建时用 `npm ci && vite build` 重新构建 | 在 |
 | Node 24.12.0 | nodejs.org 官方包（核对 SHA-256） | 在 |
 | Python 3.12 + 全部依赖（numpy、jinja2、Pillow …） | 上游 Terminal 包 `strata-control-*`（核对 SHA-256） | 在 |
-| 推理引擎 + CUDA 13 运行库（cudart、cuBLAS、cuBLASLt） | 上游引擎包 `strata-engine-*-cuda-cuda13`（核对 SHA-256） | 在 |
+| 推理引擎 + CUDA 13 运行库（cudart、cuBLAS、cuBLASLt）+ GPU 图片读取器 | 上游引擎包 `strata-engine-*-cuda-cuda13`（核对 SHA-256） | 在 |
+| DeepSeek V4.1 引擎（`strata-dsv41`，独立组件） | 上游 `strata-dsv41-*-cuda-cuda13`（核对 SHA-256），原样放进包里，启动时放到 `install/engine-dsv41/`，选 DeepSeek 模型时 Strata 核对上游签名后自己安装 | 在 |
 | 固定版本的 llama.cpp（模型处理工具要用） | 构建时按 `setup.py` 固定的提交取回 | 在 |
 | 网页端口的认证反向代理 | `app/bin/proxy.mjs`（Node 标准库，无第三方依赖） | 在 |
 | **NVIDIA 驱动的内核模块** | 飞牛应用中心的 `Nvidia-Driver-580` | **不在**：内核模块不可能放进应用包 |
@@ -37,6 +38,25 @@
 ## 访问方式
 
 点飞牛桌面上的 Strata 图标，或访问 `http://NAS-IP:端口`（默认 **47831**）。**Strata 自己没有登录功能**，所以网页端口前面放了一个带 Basic Auth 的反向代理，安装向导里必须设置用户名和密码（密码以 scrypt 哈希保存，明文不落盘）。
+
+### 给 Claude Code、Codex 等程序用（API Key）
+
+向导（以及应用设置）的“API 访问”里开启并设置 **API Key**（16 位以上，字母、数字、- 和 _；只保存 SHA-256）后，程序可以不登录网页、直接用 Key 调用 `/v1` 接口：
+
+| 协议 | 地址 | Key 放在 |
+|---|---|---|
+| OpenAI 兼容 | `http://NAS-IP:端口/v1` | `Authorization: Bearer <Key>` |
+| Anthropic 兼容（Claude Code） | `http://NAS-IP:端口` | `x-api-key: <Key>`（或 Bearer） |
+
+```bash
+# Claude Code
+ANTHROPIC_BASE_URL=http://NAS-IP:47831 ANTHROPIC_API_KEY=<Key> ANTHROPIC_MODEL=<模型 id，见 /v1/models> claude
+```
+
+- Key 只对 `/v1/...` 有效；带 Key 访问网页和 `/api` 会被拒（401），网页仍然只能用户名密码登录。错 Key 返回 401 的 JSON 错误（不会弹浏览器登录框）。
+- 认证由本包的代理做。**不要再在 Strata 网页设置里另设 API Key**：代理认完就把 Key 头去掉，宿主那边若另有 Key 会对不上。
+- Claude Code 不认识 Strata 的模型名，会提示 “assumes a context window of 1m tokens”，实际窗口是模型加载时的上下文（如 128K），长会话前按它提示的文档设一下窗口。
+- 明文 HTTP，同样只在可信局域网里用。
 
 为什么不走飞牛网关（`/app/strata/`）：这个界面的前端在代码里到处用绝对路径（`/api/…`、`/icons/…`、`/fonts/…`），放到网关的子路径下需要改写大量响应，很脆；直连端口加认证简单可靠。代价是 FN Connect 不能直接用，以及这是**明文 HTTP**，请只在可信的局域网里用，需要外网访问时放在你自己的 VPN / 反向代理（带 HTTPS）后面。
 
@@ -70,6 +90,9 @@ Strata 首次使用要下载几十 GB 的模型。向导里可选：
 - 驱动库：引擎成功使用宿主机的 `libcuda.so.1`（`var/hostlibs` 里的符号链接）；服务的锁定内存限制是飞牛的默认值（8 MiB），引擎照常工作。
 - 模型：通过宿主 API 下载 **Qwen3.6-35B-A3B UD-Q4_K_XL（22.9 GB，目录里最小的模型）**，走 hf-mirror.com，约 3.5 分钟（含校验）下完；加载成功后用 `/v1/chat/completions` 推理：**约 34–36 tokens/s**（32K 上下文、MTP；这个模型会先“思考”，所以短回答的 `content` 可能为空，内容在 `reasoning_content` 里）。
 - 停止：`appcenter-cli stop` 约 6 秒，宿主、代理、Python 服务、引擎进程全部退出，显存从 11369 MiB 回到 0，端口关闭；再 `start` 正常。
+- **API Key**：OpenAI（Bearer）和 Anthropic（`x-api-key`）两种协议的非流式、流式（SSE 事件完整）都通；错 Key / 用 Key 访问网页路径都是 401。**Claude Code 2.1 真实连接**（gfx906 版的 Coder 模型）：一句话任务 63 秒完成，建出的 `sum.py` 运行正确。
+- **图片**：Qwen3.6 带图片重新准备后（补下 `mmproj-F16.gguf`），通过 API 发一张测试图（红圆、蓝方块、数字 742），回答 “A red circle and a blue square are positioned above the number 742.”，25 秒；12 GB 显存下 Strata 用的是 CPU 读图器。
+- **DeepSeek 引擎**：启动时引擎包被放进 `install/engine-dsv41/`；用 Strata 自己的安装函数检查：上游签名有效、每个文件哈希一致，装好后试启动输出 `strata-dsv41 0.1.59 build 712fec6b4`。
 
 ## 已知问题和注意事项
 
@@ -78,9 +101,10 @@ Strata 首次使用要下载几十 GB 的模型。向导里可选：
 - **安装失败 `10234 … acl_get_file failed`**：飞牛安装时以 root 遍历应用目录，悬空 / 绝对 / 指到应用目录外的符号链接会让它失败。`build.sh` 在打包前检查这三类链接，有就直接报错。
 - 第一次 `appcenter-cli start` 返回过一次 `Failed to launch app. error code 10500`，但应用中心日志里这次启动是 `success`，应用也确实起来了，之后的 start / stop 都正常；原因没查清。
 - 宿主第一次启动会把 `engine-bundle` 里的引擎复制到应用数据的 `components/`，之后会删掉安装目录里的那份（日志有说明），所以占用的是应用数据里的 1.2 GB。
-- **外部程序（Claude Code、OpenAI 兼容客户端）连 `/v1`**：网页端口要 Basic Auth，而这些客户端用 `Authorization: Bearer`，代理会拒绝。要给别的设备用 API，请用 Strata 自带的“其他设备”共享（它另开端口，带 API Key；用到的端口要自己在飞牛防火墙里放行）。这条没有实测。
+- **图片要在模型准备时开启**：模型当初没开图片就装了的话，之后加载时开图片不会自动补文件（服务端会报 “started without the vision encoder”）。在界面里带图片重新准备一次这个模型即可，只补下读图文件（约 1 GB），不会重下模型本体。
+- **DeepSeek V4.1 的模型没有实测**（最小的也要 190 GB 以上）；引擎已在飞牛上验证（见下）。它会把放不进内存的部分从硬盘读，模型放在机械硬盘上会很慢。
 - 防火墙服务文件（`.sc`）里写的是默认端口 47831；向导里改了端口又开着防火墙的话，要自己放行。
-- **没有实测**：向导在飞牛网页里的渲染、飞牛桌面图标（`"port": "${wizard_port}"` 的写法照搬了 1Panel / MoonTVPlus）、视觉模型（图片）、DeepSeek V4.1。
+- **没有实测**：向导在飞牛网页里的渲染、飞牛桌面图标（`"port": "${wizard_port}"` 的写法照搬了 1Panel / MoonTVPlus）、DeepSeek V4.1 的模型推理、Codex / OpenCode 等其他客户端（协议和 curl 测过的一样）。
 - 直连端口是明文 HTTP，只在可信局域网里用。
 
 ## gfx906 变体（AMD MI50 / MI60 / Radeon VII）
@@ -93,7 +117,7 @@ Strata 首次使用要下载几十 GB 的模型。向导里可选：
 - 在 **Ubuntu 22.04 容器**（glibc 2.35）里编译，和上游官方 HIP 包的做法一样，所以产物能跑在飞牛（Debian 12，glibc 2.36）上。实测产物最高要求 GLIBC_2.34、GLIBCXX_3.4.30。
 - ROCm 用 **AMD TheRock 的 gfx906 wheel**（`rocm[libraries,devel]==7.14.0a20260612`，索引 `https://rocm.nightlies.amd.com/v2/gfx906/`）：AMD 正式版 ROCm 已经不带 gfx906，而 TheRock 的 rocBLAS 里有 gfx906 的内核（`rocblas/library/gfx906/`）。上游 gfx906 报告者用的也是 HIP 7.14。
 - 源码是上游 `v0.2.13` 里 0.1.59 引擎的那个提交（`712fec6b4297`）。
-- 引擎、CPU 图片读取器、ROCm 运行库（HIP、HSA、rocBLAS、hipBLAS、comgr……）和 **只有 gfx906 的** rocBLAS 内核数据一起，用上游的 `package_engine.py` 打成标准引擎组件 `0.1.59-linux-x86_64-hip-gfx906`（RUNPATH 都是 `$ORIGIN`，`binary_deps.py` 检查通过）。**运行时连宿主机的用户态库都不需要**，只用内核自带的 amdgpu 驱动（`/dev/kfd`、`/dev/dri`）。
+- 引擎、CPU 图片读取器、**GPU 图片读取器**（llama.cpp 的 ggml-hip 编给 gfx906，`strata-vision-hip`）、ROCm 运行库（HIP、HSA、rocBLAS、hipBLAS、comgr……）和 **只有 gfx906 的** rocBLAS 内核数据一起，用上游的 `package_engine.py` 打成标准引擎组件 `0.1.59-linux-x86_64-hip-gfx906`（RUNPATH 都是 `$ORIGIN`，`binary_deps.py` 检查通过）。**运行时连宿主机的用户态库都不需要**，只用内核自带的 amdgpu 驱动（`/dev/kfd`、`/dev/dri`）。
 - 构建过程中踩过的坑都已经写进脚本：Python 环境放在容器自己的文件系统里（放在 ZFS 绑定挂载上，rocm-sdk 建硬链接会报 `Invalid cross-device link`）；用独立版 CPython 3.12（TheRock 的 `rocm-sdk` 在 22.04 的 Python 3.10 / 早期 3.11 上会报 `MetadataPathFinder.invalidate_caches()` 错）；可选的 `APT_MIRROR`、`PIP_MIRROR`（国内的官方源很慢或超时）。
 
 **补丁**（都很小，打不上就让构建失败）：
@@ -106,7 +130,7 @@ Strata 首次使用要下载几十 GB 的模型。向导里可选：
 
 `launch.sh` 按 `bin/variant.env`（构建时写入）设置：gfx906 版 `STRATA_FPK_GPU_VENDOR=amd`、`STRATA_ENGINE_BACKEND=hip`、`STRATA_EXPERIMENTAL_GFX906=1`，不链接任何宿主机的库。
 
-**能跑哪些模型**：这个引擎只有 `qwen4exp` 一个系列（`strata --families`），也就是 **Qwen3.8-Flash-Next 及其 Coder / Swift / Unsloth / Gyro 等量化**。**Qwen3.6-35B-A3B 不在 gfx906 构建里**（上游文档也这么说），目录里虽然列着，但装了也跑不起来。最小可用的是 Coder IQ1_M（58.4 GB）。
+**能跑哪些模型**：这个引擎只有 `qwen4exp` 一个系列（`strata --families`），也就是 **Qwen3.8-Flash-Next 及其 Coder / Swift / Unsloth / Gyro 等量化**。**Qwen3.6-35B-A3B 不在 gfx906 构建里**（上游文档也这么说），目录里虽然列着，但装了也跑不起来。最小可用的是 Coder IQ1_M（58.4 GB）。**DeepSeek V4.1 也不支持**：上游的 CMake 明确写着 `STRATA_BUILD_DSV41 AND NOT STRATA_HIP_GFX906`，要支持得移植它的内核，不是打包能解决的。
 
 ### gfx906 实测（2026-11-15，同一台 NAS，Instinct MI50 32 GB，和 RTX 3060 同机）
 
@@ -116,7 +140,9 @@ Strata 首次使用要下载几十 GB 的模型。向导里可选：
 - 默认 **128K 上下文**直接加载成功（MI50 显存用到 31.3 / 32 GB，Strata 自动设为同时 2 个请求）。
 - 推理：写 `is_prime` 函数（162 token，7.4 秒，代码正确），`17*23` 回答 391；**解码平均约 60 tokens/s，峰值约 78**。上游的社区报告是 2 张 MI50 16 GB 跑同一个模型约 50 tok/s。
 - 停止约 6 秒，MI50 显存从 31352 MiB 回到 10 MiB。
-- **没有实测**：图片（这个包只带 CPU 图片读取器，没有编 GPU 读取器）、MI60 和 Radeon VII（同一指令集，没跑过）、多张 gfx906 卡、DFlash2 草稿模型。
+- **图片**（上游文档写着 gfx906 “没做过”）：Coder 带图片重新准备后（补下 `mmproj-Qwen3.8-Flash-Next-BF16.gguf`），32 GB 显存下 Strata 选了 **GPU 读图器 `strata-vision-hip`**，测试图回答 “A red circle and a blue square are shown above the number 742.”，6 秒。
+- **API Key** 和 Claude Code 的测试就是在这个版本上做的（见 CUDA 版实测）。
+- **没有实测**：MI60 和 Radeon VII（同一指令集，没跑过）、多张 gfx906 卡、DFlash2 草稿模型。
 
 **和 ComfyUI（gfx906）共用一张卡**：Strata 加载模型后几乎占满 MI50 的显存，这时 ComfyUI 出图会显存不足；反过来也一样。两个不要同时用，或者在 Strata 里卸载模型（停止应用也行）。
 
@@ -137,7 +163,7 @@ VARIANT=gfx906 ENGINE_COMPONENT=/path/to/work/out/components/engine/0.1.59-linux
 `build.sh` 需要 Node 24.12+、python3、curl、`fnpack`（`~/.local/bin/fnpack` 或 `FNPACK=`）、网络，每个变体的工作目录约 3 GB（`packaging/fnos/build/<变体>/`，下载缓存共用 `packaging/fnos/build/cache/`）。版本号形如 `0.2.13-cob.1`（上游 `0.2.13` + 本地小版本，符合 fork 规则）。换上游版本时同时改 `UPSTREAM_TAG`、`CONTROL_ASSET`、`ENGINE_ASSET`；校验值从该 release 的 `SHA256SUMS.txt` 自动取。
 
 ```bash
-packaging/fnos/tests/test_proxy.sh   # 不需要 GPU / 飞牛：认证代理的 14 项检查
+packaging/fnos/tests/test_proxy.sh   # 不需要 GPU / 飞牛：认证代理的 25 项检查（用户名密码、/v1 的 API Key、转发、流式、WebSocket）
 ```
 
 ## 目录
@@ -153,7 +179,8 @@ fnos/                     fpk 骨架（@APPNAME@ 等占位符由 build.sh 替换
 └── app/                  → /var/apps/strata/target
     ├── bin/launch.sh     环境（按 bin/variant.env 区分变体）、宿主机 NVIDIA 驱动库链接、宿主崩溃自动重启
     ├── bin/proxy.mjs     认证反向代理（HTTP / SSE / WebSocket）
-    ├── bin/set-password.mjs
+    ├── bin/set-password.mjs   网页密码（scrypt）
+    ├── bin/set-api-key.mjs    API Key（SHA-256）
     └── ui/               飞牛桌面入口（直接打开网页端口）
 tests/test_proxy.sh       认证代理的本地测试
 build/                    构建缓存（不入库）；成品在仓库根目录的 dist/（不入库）

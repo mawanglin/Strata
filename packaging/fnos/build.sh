@@ -28,6 +28,9 @@ UPSTREAM_REPO="${UPSTREAM_REPO:-Niko1221/Strata}"
 UPSTREAM_TAG="${UPSTREAM_TAG:-v0.2.13}"
 CONTROL_ASSET="${CONTROL_ASSET:-strata-control-0.1.59.1-linux-x86_64.tar.gz}"
 ENGINE_ASSET="${ENGINE_ASSET:-strata-engine-0.1.59-linux-x86_64-cuda-cuda13.tar.gz}"
+# DeepSeek V4.1 的引擎是单独的组件（只有 CUDA 版；上游的 gfx906 构建明确不含它）。原样放进包里，启动时放到
+# <install>/engine-dsv41/，用户选 DeepSeek 时 Strata 自己核对上游签名后安装，不用联网下载。
+DSV41_ASSET="${DSV41_ASSET:-strata-dsv41-0.1.59-linux-x86_64-cuda-cuda13.tar.gz}"
 NODE_VERSION="${NODE_VERSION:-24.12.0}"
 # nodejs.org 的 SHASUMS256.txt 里 v24.12.0 linux-x64 的值（和 apps/desktop/scripts/fetch-node.sh 记录的一致）。
 NODE_SHA256="${NODE_SHA256:-6159227e0af7d7c3c6bb2fa900452b04a6cb8841a702a79acc613209d70b04d0}"
@@ -86,6 +89,9 @@ if [ "${VARIANT}" = cuda ]; then
     ENGINE_SHA="$(sum_of "${ENGINE_ASSET}")"
     [ -n "${ENGINE_SHA}" ] || die "${ENGINE_ASSET} is not listed in SHA256SUMS.txt of ${UPSTREAM_TAG}"
     fetch "${RELEASE_URL}/${ENGINE_ASSET}" "${CACHE}/${ENGINE_ASSET}" "${ENGINE_SHA}"
+    DSV41_SHA="$(sum_of "${DSV41_ASSET}")"
+    [ -n "${DSV41_SHA}" ] || die "${DSV41_ASSET} is not listed in SHA256SUMS.txt of ${UPSTREAM_TAG}"
+    fetch "${RELEASE_URL}/${DSV41_ASSET}" "${CACHE}/${DSV41_ASSET}" "${DSV41_SHA}"
 fi
 NODE_TGZ="node-v${NODE_VERSION}-linux-x64.tar.gz"
 fetch "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TGZ}" "${CACHE}/${NODE_TGZ}" "${NODE_SHA256}"
@@ -150,6 +156,11 @@ else
     "${PY}" -I "${REPO}/packaging/package_engine.py" --verify "${ENGINE_DIR}" >/dev/null || die "the gfx906 engine component fails its own hash check"
 fi
 [ -f "${ENGINE_DIR}/strata" ] || die "engine package has no strata binary"
+if [ "${VARIANT}" = cuda ]; then
+    log "DeepSeek engine package (as released, installed by Strata on first use)"
+    mkdir -p "${APP}/dsv41"
+    cp "${CACHE}/${DSV41_ASSET}" "${APP}/dsv41/"
+fi
 
 # ---- 宿主（Node）和界面 -------------------------------------------------------------
 log "App Host + UI from ${UPSTREAM_TAG}"

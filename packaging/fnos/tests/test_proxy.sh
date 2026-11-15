@@ -1,5 +1,5 @@
 #!/bin/bash
-# 不需要 GPU、不需要飞牛：检查认证代理（Basic Auth、转发、流式响应、WebSocket 升级、Origin 改写）和密码哈希。
+# 不需要 GPU、不需要飞牛：检查认证代理（Basic Auth、/v1 的 API Key、转发、流式响应、WebSocket 升级、Origin 改写）和密码 / Key 的保存。
 # 用法： packaging/fnos/tests/test_proxy.sh      （需要 node 24 和 curl）
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -25,7 +25,10 @@ JS
 node "${T}/up.mjs" & 
 printf 's3cret-pass\n' | node "${BIN}/set-password.mjs" admin "${T}/auth.json"
 check "password file is 0600 and has no plaintext" '[ "$(stat -c %a "${T}/auth.json")" = 600 ] && ! grep -q s3cret-pass "${T}/auth.json"'
-PROXY_PORT=${PX} PROXY_UPSTREAM_PORT=${UP} PROXY_AUTH_FILE="${T}/auth.json" node "${BIN}/proxy.mjs" > "${T}/proxy.log" 2>&1 &
+check "API key shorter than 16 is refused" '! printf "short\n" | node "${BIN}/set-api-key.mjs" "${T}/key.json" 2>/dev/null && [ ! -e "${T}/key.json" ]'
+printf 'sk-test_0123456789abcdef\n' | node "${BIN}/set-api-key.mjs" "${T}/key.json"
+check "API key file is 0600 and has no plaintext" '[ "$(stat -c %a "${T}/key.json")" = 600 ] && ! grep -q sk-test_0123456789abcdef "${T}/key.json"'
+PROXY_PORT=${PX} PROXY_UPSTREAM_PORT=${UP} PROXY_AUTH_FILE="${T}/auth.json" PROXY_API_KEY_FILE="${T}/key.json" node "${BIN}/proxy.mjs" > "${T}/proxy.log" 2>&1 &
 for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:${PX}/" && break; sleep 0.1; done
 
 code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
@@ -38,6 +41,19 @@ check "Host is rewritten to the upstream" 'echo "${R}" | grep -q "\"host\":\"127
 check "Origin is rewritten"               'echo "${R}" | grep -q "\"origin\":\"http://127.0.0.1:${UP}\""'
 check "Authorization is not forwarded"    'echo "${R}" | grep -q "\"auth\":null"'
 check "request body is forwarded"         'echo "${R}" | grep -q "\"body\":\"x=1\""'
+K=sk-test_0123456789abcdef
+check "API: Bearer key on /v1 -> 200"         '[ "$(code -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/v1/models)" = 200 ]'
+check "API: x-api-key on /v1 -> 200"          '[ "$(code -H "x-api-key: ${K}" -X POST -d "{}" http://127.0.0.1:${PX}/v1/messages)" = 200 ]'
+RK="$(curl -s -H "Authorization: Bearer ${K}" -H "x-api-key: ${K}" http://127.0.0.1:${PX}/v1/models)"
+check "API: key headers are not forwarded"    'echo "${RK}" | grep -q "\"auth\":null"'
+check "API: wrong key -> 401 JSON, no login prompt" '[ "$(curl -s -o "${T}/w" -w "%{http_code}" -H "Authorization: Bearer nope-nope-nope-nope" http://127.0.0.1:${PX}/v1/models)" = 401 ] && grep -q authentication_error "${T}/w" && ! curl -sI -H "Authorization: Bearer nope" http://127.0.0.1:${PX}/v1/models | grep -qi www-authenticate'
+check "API: key outside /v1 -> 401"           '[ "$(code -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/api/hardware)" = 401 ]'
+check "API: /v1x is not an API path"          '[ "$(code -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/v1x)" = 401 ]'
+check "API: Basic Auth still works on /v1"    '[ "$(code -u admin:s3cret-pass http://127.0.0.1:${PX}/v1/models)" = 200 ]'
+node "${BIN}/set-api-key.mjs" "${T}/key.json" --clear
+check "API: key access off -> key refused"    '[ "$(code -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/v1/models)" = 401 ]'
+printf '%s\n' "${K}" | node "${BIN}/set-api-key.mjs" "${T}/key.json"
+check "API: key turned on again without restart" '[ "$(code -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/v1/models)" = 200 ]'
 S="$(curl -sN -u admin:s3cret-pass "http://127.0.0.1:${PX}/stream")"
 check "streamed response arrives whole"   '[ "$(echo "${S}" | grep -c "^data:")" = 3 ]'
 L="$(curl -s -D - -o /dev/null -u admin:s3cret-pass "http://127.0.0.1:${PX}/redir" | tr -d "\r" | sed -n "s/^[Ll]ocation: //p")"
