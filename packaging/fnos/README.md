@@ -184,6 +184,16 @@ sudo /var/apps/strata/target/bin/strata --help
 - 停止约 6 秒，MI50 显存从 31352 MiB 回到 10 MiB。
 - **图片**（上游文档写着 gfx906 “没做过”）：Coder 带图片重新准备后（补下 `mmproj-Qwen3.8-Flash-Next-BF16.gguf`），32 GB 显存下 Strata 选了 **GPU 读图器 `strata-vision-hip`**，测试图回答 “A red circle and a blue square are shown above the number 742.”，6 秒。
 - **API Key** 和 Claude Code 的测试就是在这个版本上做的（见 CUDA 版实测）。
+- **Qwen3.8-Flash-Next IQ3_XXS（上游首推的 ISTA-DASLab 版本，75.8 GB）**，2026-11-15 实测：hf-mirror.com 下载约 5 分钟 + 校验 3 分钟，进共享模型库；加载 276 秒（第一次从机械硬盘读 79 GB），128K 上下文、同时 2 个请求。
+
+  | 测试 | 用时 | 结果 | 生成速度 |
+  |---|---|---|---|
+  | 写 `is_prime`（加载后第一个请求） | 28.8 秒 / 244 token | 正确 | 约 45 tok/s |
+  | 鸡兔同笼（35 头 94 脚） | 5.3 秒 / 126 token | 鸡 23、兔 12，正确 | 约 47 tok/s |
+  | 800 token 长输出 | 28.4 秒 | 全用在“思考”上，正文为空（模型习惯；放大输出上限即可） | 峰值 58，平均约 40 tok/s |
+  | 4237 token 的长提示词 | 16.7 秒 | 正确回答 “OK” | 读入约 **436 tok/s** |
+
+  和 Coder IQ1_M 比：生成慢一些（平均约 40 对 60 tok/s），但量化精度更高，适合日常聊天和推理；Coder 适合写代码。
 - **没有实测**：MI60 和 Radeon VII（同一指令集，没跑过）、多张 gfx906 卡、DFlash2 草稿模型。
 
 **和 ComfyUI（gfx906）共用一张卡**：Strata 加载模型后几乎占满 MI50 的显存，这时 ComfyUI 出图会显存不足；反过来也一样。两个不要同时用，或者在 Strata 里卸载模型（停止应用也行）。
