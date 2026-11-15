@@ -1,20 +1,26 @@
 #!/bin/bash
-# 构建 Strata 的飞牛 fnOS 原生 fpk（NVIDIA CUDA 版，x86_64）。
+# 构建 Strata 的飞牛 fnOS 原生 fpk（x86_64）。两个变体：
 #
-#   packaging/fnos/build.sh
+#   packaging/fnos/build.sh                                   # NVIDIA CUDA 版 -> dist/strata_<版本>_amd64.fpk
+#   VARIANT=gfx906 ENGINE_COMPONENT=<引擎组件目录> packaging/fnos/build.sh
+#                                                             # AMD gfx906 版 -> dist/strata-gfx906_<版本>_amd64.fpk
 #
-# 输出：dist/strata_<版本>_amd64.fpk
+# gfx906 的引擎上游没有现成包，用 packaging/fnos/gfx906/build-engine-docker.sh 编出来，ENGINE_COMPONENT 指向它的
+# out/components/engine/<版本>-linux-x86_64-hip-gfx906/。
 #
 # 需要：Node 24.12+（构建界面用）、python3、curl、tar、fnpack（在 PATH 或 ~/.local/bin，或用 FNPACK=… 指定）、网络。
 # 运行时全部来自上游 release（逐个核对 SHA-256）：Terminal 包（自带 Python 和依赖）、CUDA13 引擎包
 # （自带 cudart / cuBLAS）、Node 运行时；界面从本仓库的 release 标签源码构建。
-# 包里没有的只有 NVIDIA 驱动的用户态库 libcuda（必须和宿主机内核模块同版本，运行时从宿主机链接）。
+# CUDA 版包里没有的只有 NVIDIA 驱动的用户态库 libcuda（必须和宿主机内核模块同版本，运行时从宿主机链接）；
+# gfx906 版连 ROCm 运行库和 rocBLAS 内核都在引擎组件里，只需要内核的 amdgpu 驱动。
 #
 # 环境变量：
 #   UPSTREAM_TAG   上游 release 标签（默认 v0.2.13）；界面源码取这个标签的 apps/host
 #   CONTROL_ASSET / ENGINE_ASSET / NODE_VERSION  见下面的默认值，换版本时连同校验值一起改
 #   BUILD_NUMBER   版本号里的本地小版本（默认 1，形如 0.2.13-cob.1）
-#   WORK_DIR       工作目录（默认 packaging/fnos/build/），下载缓存也在里面
+#   VARIANT        cuda（默认）| gfx906
+#   ENGINE_COMPONENT  gfx906 必填：编好的引擎组件目录
+#   WORK_DIR       工作目录（默认 packaging/fnos/build/<变体>/）；下载缓存在 packaging/fnos/build/cache/（CACHE_DIR）
 
 set -euo pipefail
 
@@ -26,16 +32,24 @@ NODE_VERSION="${NODE_VERSION:-24.12.0}"
 # nodejs.org 的 SHASUMS256.txt 里 v24.12.0 linux-x64 的值（和 apps/desktop/scripts/fetch-node.sh 记录的一致）。
 NODE_SHA256="${NODE_SHA256:-6159227e0af7d7c3c6bb2fa900452b04a6cb8841a702a79acc613209d70b04d0}"
 
-APPNAME=strata
-DISPLAY_NAME="Strata"
-SHARE=Strata
-DEFAULT_PORT=47831
-DESC_BASE="原生运行的 Strata（不依赖 Docker）：本地大模型推理引擎和网页界面，使用 NVIDIA CUDA。Node、Python、引擎和 CUDA 运行库都在包里，只需要宿主机装好 NVIDIA 驱动。"
+VARIANT="${VARIANT:-cuda}"
+case "${VARIANT}" in
+    cuda)
+        APPNAME=strata; DISPLAY_NAME="Strata"; SHARE=Strata; DEFAULT_PORT=47831
+        GPU_VENDOR=nvidia; ENGINE_BACKEND=cuda; ENGINE_NOTE="CUDA 13，RTX 20/30/40/50"
+        DESC_BASE="原生运行的 Strata（不依赖 Docker）：本地大模型推理引擎和网页界面，使用 NVIDIA CUDA。Node、Python、引擎和 CUDA 运行库都在包里，只需要宿主机装好 NVIDIA 驱动。" ;;
+    gfx906)
+        APPNAME=strata-gfx906; DISPLAY_NAME="Strata (gfx906)"; SHARE=Strata-gfx906; DEFAULT_PORT=47832
+        GPU_VENDOR=amd; ENGINE_BACKEND=hip; ENGINE_NOTE="AMD gfx906：MI50 / MI60 / Radeon VII，ROCm 运行库在包里"
+        ENGINE_COMPONENT="$(cd "${ENGINE_COMPONENT:?VARIANT=gfx906 needs ENGINE_COMPONENT=<engine component folder>}" && pwd)"
+        DESC_BASE="原生运行的 Strata（不依赖 Docker）：本地大模型推理引擎和网页界面，使用 AMD gfx906 显卡（MI50 / MI60 / Radeon VII）。Node、Python、引擎、ROCm 运行库和 rocBLAS 内核都在包里，只需要内核自带的 amdgpu 驱动。" ;;
+    *) echo "VARIANT must be cuda or gfx906" >&2; exit 2 ;;
+esac
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "${HERE}/../.." && pwd)"
-WORK_DIR="${WORK_DIR:-${HERE}/build}"
-CACHE="${WORK_DIR}/cache"
+WORK_DIR="${WORK_DIR:-${HERE}/build/${VARIANT}}"
+CACHE="${CACHE_DIR:-${HERE}/build/cache}"
 DIST_DIR="${REPO}/dist"
 PKG="${WORK_DIR}/pkg"
 FNPACK="${FNPACK:-$(command -v fnpack || echo "${HOME}/.local/bin/fnpack")}"
@@ -65,10 +79,14 @@ fetch() {  # fetch URL DEST SHA256
 log "checksums of the ${UPSTREAM_TAG} release"
 curl -fsSL --retry 3 -o "${CACHE}/SHA256SUMS-${UPSTREAM_TAG}.txt" "${RELEASE_URL}/SHA256SUMS.txt"
 sum_of() { awk -v f="$1" '$2==f {print $1}' "${CACHE}/SHA256SUMS-${UPSTREAM_TAG}.txt"; }
-CONTROL_SHA="$(sum_of "${CONTROL_ASSET}")"; ENGINE_SHA="$(sum_of "${ENGINE_ASSET}")"
-[ -n "${CONTROL_SHA}" ] && [ -n "${ENGINE_SHA}" ] || die "asset not listed in SHA256SUMS.txt of ${UPSTREAM_TAG}"
+CONTROL_SHA="$(sum_of "${CONTROL_ASSET}")"
+[ -n "${CONTROL_SHA}" ] || die "${CONTROL_ASSET} is not listed in SHA256SUMS.txt of ${UPSTREAM_TAG}"
 fetch "${RELEASE_URL}/${CONTROL_ASSET}" "${CACHE}/${CONTROL_ASSET}" "${CONTROL_SHA}"
-fetch "${RELEASE_URL}/${ENGINE_ASSET}" "${CACHE}/${ENGINE_ASSET}" "${ENGINE_SHA}"
+if [ "${VARIANT}" = cuda ]; then
+    ENGINE_SHA="$(sum_of "${ENGINE_ASSET}")"
+    [ -n "${ENGINE_SHA}" ] || die "${ENGINE_ASSET} is not listed in SHA256SUMS.txt of ${UPSTREAM_TAG}"
+    fetch "${RELEASE_URL}/${ENGINE_ASSET}" "${CACHE}/${ENGINE_ASSET}" "${ENGINE_SHA}"
+fi
 NODE_TGZ="node-v${NODE_VERSION}-linux-x64.tar.gz"
 fetch "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TGZ}" "${CACHE}/${NODE_TGZ}" "${NODE_SHA256}"
 
@@ -90,6 +108,12 @@ tar -xzf "${CACHE}/${CONTROL_ASSET}" -C "${APP}/control"   # 这个包没有顶�
 [ -x "${APP}/control/python/bin/python3" ] && [ -f "${APP}/control/strata.py" ] || die "unexpected layout of ${CONTROL_ASSET}"
 PY="${APP}/control/python/bin/python3"
 
+# 本包对 Control 的补丁（patches/control）：打在上游 release 的 Terminal 包上，打不上就失败。
+for p in "${HERE}"/patches/control/*.patch; do
+    [ -e "${p}" ] || continue
+    ( cd "${APP}/control" && patch -p1 --no-backup-if-mismatch < "${p}" ) || die "control patch does not apply: $(basename "${p}")"
+done
+
 # 预先编译 .pyc（运行时设了 PYTHONDONTWRITEBYTECODE，且安装目录对应用用户只读）。
 "${PY}" -I -m compileall -q "${APP}/control/strata_control" "${APP}/control/serve" "${APP}/control/strata_cli" "${APP}/control/strata.py" >/dev/null 2>&1 || true
 
@@ -104,15 +128,27 @@ rm -rf "${SEED}"/third_party/*.zip*
 du -sh "${SEED}" | sed 's/^/    seed: /'
 
 # ---- 引擎 ------------------------------------------------------------------------
-log "CUDA engine"
-ENGINE_TMP="${WORK_DIR}/stage/engine"
-mkdir -p "${ENGINE_TMP}"
-tar -xzf "${CACHE}/${ENGINE_ASSET}" -C "${ENGINE_TMP}"
-ENGINE_VERSION="$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "${ENGINE_TMP}/engine-component.json" | head -1)"
 # 宿主按 <引擎目录>/<包文件夹>/engine-component.json 找；文件夹名和 package_engine.py 的一致。
-ENGINE_DIR="${APP}/engine-bundle/${ENGINE_VERSION}-linux-x86_64-cuda-cuda13"
-mkdir -p "$(dirname "${ENGINE_DIR}")"
-mv "${ENGINE_TMP}" "${ENGINE_DIR}"
+if [ "${VARIANT}" = cuda ]; then
+    log "CUDA engine (upstream release)"
+    ENGINE_TMP="${WORK_DIR}/stage/engine"
+    mkdir -p "${ENGINE_TMP}"
+    tar -xzf "${CACHE}/${ENGINE_ASSET}" -C "${ENGINE_TMP}"
+    ENGINE_VERSION="$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "${ENGINE_TMP}/engine-component.json" | head -1)"
+    ENGINE_DIR="${APP}/engine-bundle/${ENGINE_VERSION}-linux-x86_64-cuda-cuda13"
+    mkdir -p "$(dirname "${ENGINE_DIR}")"
+    mv "${ENGINE_TMP}" "${ENGINE_DIR}"
+else
+    log "gfx906 engine (${ENGINE_COMPONENT})"
+    [ -f "${ENGINE_COMPONENT}/engine-component.json" ] || die "no engine-component.json in ${ENGINE_COMPONENT}"
+    grep -q '"backend": *"hip"' "${ENGINE_COMPONENT}/engine-component.json" && grep -q '"gfx906"' "${ENGINE_COMPONENT}/engine-component.json" \
+        || die "${ENGINE_COMPONENT} is not a HIP gfx906 engine component"
+    ENGINE_VERSION="$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "${ENGINE_COMPONENT}/engine-component.json" | head -1)"
+    ENGINE_DIR="${APP}/engine-bundle/$(basename "${ENGINE_COMPONENT}")"
+    mkdir -p "$(dirname "${ENGINE_DIR}")"
+    cp -a "${ENGINE_COMPONENT}" "${ENGINE_DIR}"
+    "${PY}" -I "${REPO}/packaging/package_engine.py" --verify "${ENGINE_DIR}" >/dev/null || die "the gfx906 engine component fails its own hash check"
+fi
 [ -f "${ENGINE_DIR}/strata" ] || die "engine package has no strata binary"
 
 # ---- 宿主（Node）和界面 -------------------------------------------------------------
@@ -150,10 +186,16 @@ for size, dest in ((64, '${PKG}/ICON.PNG'), (256, '${PKG}/ICON_256.PNG'), (64, '
     im.resize((size, size), Image.LANCZOS).save(dest)
 "
 chmod +x "${PKG}"/cmd/* "${PKG}"/app/bin/launch.sh
+# 这个包是哪个变体：launch.sh 读它决定显卡厂商、引擎后端，以及要不要链接宿主机的 NVIDIA 驱动库。
+cat > "${PKG}/app/bin/variant.env" <<VENV
+STRATA_FPK_VARIANT=${VARIANT}
+STRATA_FPK_GPU_VENDOR=${GPU_VENDOR}
+STRATA_FPK_ENGINE_BACKEND=${ENGINE_BACKEND}
+VENV
 
 NODE_FULL="$("${APP}/node/bin/node" --version)"
 APP_VERSION="$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "${APP}/host/package.json" | head -1)"
-DESC="${DESC_BASE}Strata ${APP_VERSION}，引擎 ${ENGINE_VERSION}（CUDA 13，RTX 20/30/40/50），Node ${NODE_FULL}。"
+DESC="${DESC_BASE}Strata ${APP_VERSION}，引擎 ${ENGINE_VERSION}（${ENGINE_NOTE}），Node ${NODE_FULL}。"
 sed_escape() { printf '%s' "$1" | sed -e 's/[&|\\]/\\&/g'; }
 for f in manifest app/ui/config config/privilege config/resource wizard/install wizard/config wizard/uninstall; do
     sed -i \

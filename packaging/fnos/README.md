@@ -1,6 +1,15 @@
-# Strata for fnOS（NVIDIA CUDA，原生 fpk，无需 Docker）
+# Strata for fnOS（原生 fpk，无需 Docker）
 
-在飞牛 fnOS 上原生运行的 [Strata](https://github.com/Niko1221/Strata)：本地大模型推理引擎 + 完整的网页界面（聊天、模型管理、监控），用 NVIDIA 显卡跑。本目录是 fork 里 `fpk` 分支的打包工程，作者 Cob。
+在飞牛 fnOS 上原生运行的 [Strata](https://github.com/Niko1221/Strata)：本地大模型推理引擎 + 完整的网页界面（聊天、模型管理、监控）。本目录是 fork 里的打包工程，作者 Cob。
+
+两个变体，可以装在同一台 NAS 上：
+
+| 变体 | 应用名 | 显卡 | 默认端口 | 共享文件夹 | 引擎来源 |
+|---|---|---|---|---|---|
+| CUDA | `strata` | NVIDIA RTX 20 / 30 / 40 / 50 | 47831 | `Strata` | 上游 release 的 CUDA13 引擎包 |
+| gfx906 | `strata-gfx906` | AMD Instinct MI50 / MI60、Radeon VII | 47832 | `Strata-gfx906` | 自己编译（上游没有现成包），见 [gfx906 变体](#gfx906-变体amd-mi50--mi60--radeon-vii) |
+
+下面先讲 CUDA 版；两者共用同一套脚本、界面、认证代理和向导，只有引擎和显卡相关的部分不同。
 
 ## 包里有什么、没有什么
 
@@ -23,7 +32,7 @@
 - NVIDIA RTX 20 / 30 / 40 / 50 系列（引擎带 sm_75 / 86 / 89 / 120 的机器码）。
 - CPU 支持 AVX2（引擎按可移植方式编译，要求 AVX2）。
 - 内存和显存按模型来，见上游的 [模型选择指南](../../docs/MODELS.md)。
-- AMD 显卡（含 MI50 / gfx906）**不支持**这个包：上游没有 gfx906 的预编译引擎，只能源码构建，以后另做一个变体。
+- AMD MI50 / MI60 / Radeon VII 用 gfx906 变体；其他 AMD 显卡两个包都不支持。
 
 ## 访问方式
 
@@ -57,7 +66,7 @@ Strata 首次使用要下载几十 GB 的模型。向导里可选：
 
 - `appcenter-cli install-fpk` 真实安装成功（向导参数用环境变量文件传入），应用用户 `strata`（在 video、render 组），共享文件夹 `Strata` 自动创建；启动约 1 秒就监听端口，宿主 2 秒内可用。
 - 认证代理：不带密码 / 密码错误返回 401，正确返回界面；`/api/hardware`、`/api/engines`、`/v1/models` 都能通过代理访问。
-- 硬件识别：机器里同时有 RTX 3060 和 MI50（32 GB）。上游宿主按显存最大选加速器，会选中 MI50（引擎没有它的代码）。`patches/0001-nvidia-only.patch` 加了开关 `STRATA_FPK_NVIDIA_ONLY=1`（`launch.sh` 里已设），只保留 NVIDIA 卡后识别为 `NVIDIA GeForce RTX 3060 / cuda`。
+- 硬件识别：机器里同时有 RTX 3060 和 MI50（32 GB）。上游宿主按显存最大选加速器，会选中 MI50（引擎没有它的代码）。`patches/0001-gpu-vendor.patch` 加了开关 `STRATA_FPK_GPU_VENDOR=nvidia|amd`（`launch.sh` 按变体设置），只保留本变体厂商的卡后识别为 `NVIDIA GeForce RTX 3060 / cuda`。
 - 驱动库：引擎成功使用宿主机的 `libcuda.so.1`（`var/hostlibs` 里的符号链接）；服务的锁定内存限制是飞牛的默认值（8 MiB），引擎照常工作。
 - 模型：通过宿主 API 下载 **Qwen3.6-35B-A3B UD-Q4_K_XL（22.9 GB，目录里最小的模型）**，走 hf-mirror.com，约 3.5 分钟（含校验）下完；加载成功后用 `/v1/chat/completions` 推理：**约 34–36 tokens/s**（32K 上下文、MTP；这个模型会先“思考”，所以短回答的 `content` 可能为空，内容在 `reasoning_content` 里）。
 - 停止：`appcenter-cli stop` 约 6 秒，宿主、代理、Python 服务、引擎进程全部退出，显存从 11369 MiB 回到 0，端口关闭；再 `start` 正常。
@@ -74,14 +83,58 @@ Strata 首次使用要下载几十 GB 的模型。向导里可选：
 - **没有实测**：向导在飞牛网页里的渲染、飞牛桌面图标（`"port": "${wizard_port}"` 的写法照搬了 1Panel / MoonTVPlus）、视觉模型（图片）、DeepSeek V4.1。
 - 直连端口是明文 HTTP，只在可信局域网里用。
 
+## gfx906 变体（AMD MI50 / MI60 / Radeon VII）
+
+上游没有 gfx906 的现成引擎：它是单独的 `-DSTRATA_HIP_GFX906=ON` 构建（把 CUDA 源码当 HIP 编译，wave64），上游只说“社区测试过”，
+安装程序也不认这张卡。这个变体自己编引擎，其余（界面、宿主、Control、代理、向导）和 CUDA 版共用。
+
+**引擎怎么来的**（`gfx906/build-engine-docker.sh` → `gfx906/build-engine.sh`）：
+
+- 在 **Ubuntu 22.04 容器**（glibc 2.35）里编译，和上游官方 HIP 包的做法一样，所以产物能跑在飞牛（Debian 12，glibc 2.36）上。实测产物最高要求 GLIBC_2.34、GLIBCXX_3.4.30。
+- ROCm 用 **AMD TheRock 的 gfx906 wheel**（`rocm[libraries,devel]==7.14.0a20260612`，索引 `https://rocm.nightlies.amd.com/v2/gfx906/`）：AMD 正式版 ROCm 已经不带 gfx906，而 TheRock 的 rocBLAS 里有 gfx906 的内核（`rocblas/library/gfx906/`）。上游 gfx906 报告者用的也是 HIP 7.14。
+- 源码是上游 `v0.2.13` 里 0.1.59 引擎的那个提交（`712fec6b4297`）。
+- 引擎、CPU 图片读取器、ROCm 运行库（HIP、HSA、rocBLAS、hipBLAS、comgr……）和 **只有 gfx906 的** rocBLAS 内核数据一起，用上游的 `package_engine.py` 打成标准引擎组件 `0.1.59-linux-x86_64-hip-gfx906`（RUNPATH 都是 `$ORIGIN`，`binary_deps.py` 检查通过）。**运行时连宿主机的用户态库都不需要**，只用内核自带的 amdgpu 驱动（`/dev/kfd`、`/dev/dri`）。
+- 构建过程中踩过的坑都已经写进脚本：Python 环境放在容器自己的文件系统里（放在 ZFS 绑定挂载上，rocm-sdk 建硬链接会报 `Invalid cross-device link`）；用独立版 CPython 3.12（TheRock 的 `rocm-sdk` 在 22.04 的 Python 3.10 / 早期 3.11 上会报 `MetadataPathFinder.invalidate_caches()` 错）；可选的 `APT_MIRROR`、`PIP_MIRROR`（国内的官方源很慢或超时）。
+
+**补丁**（都很小，打不上就让构建失败）：
+
+| 补丁 | 打在哪 | 作用 |
+|---|---|---|
+| `gfx906/patches/0001-hip-compat-stream-priority.patch` | 引擎源码 | gfx906 兼容层缺 `cudaStreamCreateWithPriority`、`cudaDeviceGetStreamPriorityRange` 的映射，`src/core/dflash2.cpp` 编不过；补两行 `#define`。上游到现在的 HEAD 也没补 |
+| `patches/control/0001-gfx906-opt-in-and-backend.patch` | Control 的 `setup.py` | ① 加开关 `STRATA_EXPERIMENTAL_GFX906=1`（照上游 gfx1103 / gfx1150 的写法），把 gfx906 加进 AMD 支持名单；② 安装时没指定后端就用 `STRATA_ENGINE_BACKEND`，否则同时有 NVIDIA 卡的机器会默认装成 CUDA |
+| `patches/0001-gpu-vendor.patch` | 宿主 | 只保留本变体厂商的卡（两个变体共用） |
+
+`launch.sh` 按 `bin/variant.env`（构建时写入）设置：gfx906 版 `STRATA_FPK_GPU_VENDOR=amd`、`STRATA_ENGINE_BACKEND=hip`、`STRATA_EXPERIMENTAL_GFX906=1`，不链接任何宿主机的库。
+
+**能跑哪些模型**：这个引擎只有 `qwen4exp` 一个系列（`strata --families`），也就是 **Qwen3.8-Flash-Next 及其 Coder / Swift / Unsloth / Gyro 等量化**。**Qwen3.6-35B-A3B 不在 gfx906 构建里**（上游文档也这么说），目录里虽然列着，但装了也跑不起来。最小可用的是 Coder IQ1_M（58.4 GB）。
+
+### gfx906 实测（2026-11-15，同一台 NAS，Instinct MI50 32 GB，和 RTX 3060 同机）
+
+- `appcenter-cli install-fpk` 安装 `strata-gfx906`（端口 47832、共享文件夹 `Strata-gfx906`、应用用户在 video / render 组），和 CUDA 版的 `strata` **同时运行**互不影响（内部端口被占用时自动换一个）。
+- 硬件识别为 MI50；Control 认为 MI50 可用、引擎 `0.1.59 (linux-x86_64-hip)` 可用；装模型时后端自动是 `hip`。
+- 下载 **Qwen3.8-Flash-Next Coder IQ1_M（58.4 GB）**，hf-mirror.com，约 15 分钟（含校验和 MTP 草稿层）。
+- 默认 **128K 上下文**直接加载成功（MI50 显存用到 31.3 / 32 GB，Strata 自动设为同时 2 个请求）。
+- 推理：写 `is_prime` 函数（162 token，7.4 秒，代码正确），`17*23` 回答 391；**解码平均约 60 tokens/s，峰值约 78**。上游的社区报告是 2 张 MI50 16 GB 跑同一个模型约 50 tok/s。
+- 停止约 6 秒，MI50 显存从 31352 MiB 回到 10 MiB。
+- **没有实测**：图片（这个包只带 CPU 图片读取器，没有编 GPU 读取器）、MI60 和 Radeon VII（同一指令集，没跑过）、多张 gfx906 卡、DFlash2 草稿模型。
+
+**和 ComfyUI（gfx906）共用一张卡**：Strata 加载模型后几乎占满 MI50 的显存，这时 ComfyUI 出图会显存不足；反过来也一样。两个不要同时用，或者在 Strata 里卸载模型（停止应用也行）。
+
 ## 构建
 
 ```bash
-packaging/fnos/build.sh          # 输出 dist/strata_<版本>_amd64.fpk
+packaging/fnos/build.sh                          # CUDA 版：dist/strata_<版本>_amd64.fpk
 BUILD_NUMBER=2 packaging/fnos/build.sh
+
+# gfx906 版：先在有 docker 的 x86_64 Linux（比如飞牛本机）编引擎。在飞牛上一次完整流程（装系统包、下载 ROCm wheel、编译、打包）实测约 17 分钟，
+# 但那次引擎是在之前失败的编译上增量编译的，从零编译的时间没单独测
+APT_MIRROR=http://mirrors.ustc.edu.cn PIP_MIRROR=https://mirrors.cloud.tencent.com/pypi/simple \
+    packaging/fnos/gfx906/build-engine-docker.sh /path/to/work
+# 再打 fpk：dist/strata-gfx906_<版本>_amd64.fpk
+VARIANT=gfx906 ENGINE_COMPONENT=/path/to/work/out/components/engine/0.1.59-linux-x86_64-hip-gfx906 packaging/fnos/build.sh
 ```
 
-需要 Node 24.12+、python3、curl、`fnpack`（`~/.local/bin/fnpack` 或 `FNPACK=`）、网络，工作目录约 3 GB。版本号形如 `0.2.13-cob.1`（上游 `0.2.13` + 本地小版本，符合 fork 规则）。换上游版本时同时改 `UPSTREAM_TAG`、`CONTROL_ASSET`、`ENGINE_ASSET`；校验值从该 release 的 `SHA256SUMS.txt` 自动取。
+`build.sh` 需要 Node 24.12+、python3、curl、`fnpack`（`~/.local/bin/fnpack` 或 `FNPACK=`）、网络，每个变体的工作目录约 3 GB（`packaging/fnos/build/<变体>/`，下载缓存共用 `packaging/fnos/build/cache/`）。版本号形如 `0.2.13-cob.1`（上游 `0.2.13` + 本地小版本，符合 fork 规则）。换上游版本时同时改 `UPSTREAM_TAG`、`CONTROL_ASSET`、`ENGINE_ASSET`；校验值从该 release 的 `SHA256SUMS.txt` 自动取。
 
 ```bash
 packaging/fnos/tests/test_proxy.sh   # 不需要 GPU / 飞牛：认证代理的 14 项检查
@@ -90,13 +143,15 @@ packaging/fnos/tests/test_proxy.sh   # 不需要 GPU / 飞牛：认证代理的 
 ## 目录
 
 ```
-build.sh                  构建脚本
+build.sh                  构建脚本（VARIANT=cuda|gfx906）
+gfx906/                   gfx906 引擎的构建：build-engine-docker.sh（宿主侧）、build-engine.sh（容器里）、patches/（引擎源码补丁）
+patches/                  宿主补丁（0001-gpu-vendor.patch）；patches/control/ 是 Control 的补丁
 fnos/                     fpk 骨架（@APPNAME@ 等占位符由 build.sh 替换）
 ├── manifest, config/     应用清单；privilege（应用用户 strata + video/render 组）、resource（共享文件夹、防火墙）
 ├── cmd/                  生命周期脚本（start/stop/status、安装/配置/升级/卸载回调）
 ├── wizard/               安装 / 设置 / 卸载向导
 └── app/                  → /var/apps/strata/target
-    ├── bin/launch.sh     环境、宿主机驱动库链接、宿主崩溃自动重启
+    ├── bin/launch.sh     环境（按 bin/variant.env 区分变体）、宿主机 NVIDIA 驱动库链接、宿主崩溃自动重启
     ├── bin/proxy.mjs     认证反向代理（HTTP / SSE / WebSocket）
     ├── bin/set-password.mjs
     └── ui/               飞牛桌面入口（直接打开网页端口）

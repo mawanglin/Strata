@@ -1,7 +1,8 @@
 #!/bin/bash
 # 以应用用户运行（没有沙箱，也不用 Docker）：Strata 宿主（Node）+ 带认证的反向代理。
-# 运行时（Node、Python、引擎、CUDA 运行库）全部在 fpk 里；只有 NVIDIA 驱动的用户态库
-# libcuda.so.1 / libnvidia-ml.so.1 必须来自宿主机（它们要和内核模块同一个版本，没法打进包里）。
+# 运行时（Node、Python、引擎、GPU 运行库）全部在 fpk 里。
+#   CUDA 版：只有 NVIDIA 驱动的用户态库 libcuda.so.1 / libnvidia-ml.so.1 来自宿主机（要和内核模块同一个版本，没法打进包里）。
+#   gfx906 版：ROCm 运行库和 rocBLAS 内核都在引擎组件里，只用内核的 amdgpu 驱动（/dev/kfd、/dev/dri）。
 #
 # 用法： launch.sh                  前台运行
 #        launch.sh exec CMD [ARG..] 用和运行时相同的环境跑一条命令（测试和排错用）
@@ -12,6 +13,10 @@ set -eu
 APPDEST="${TRIM_APPDEST:?}"
 PKGVAR="${TRIM_PKGVAR:?}"
 NODE="${APPDEST}/node/bin/node"
+
+# 变体（build.sh 写的）：STRATA_FPK_VARIANT、STRATA_FPK_GPU_VENDOR、STRATA_FPK_ENGINE_BACKEND
+# shellcheck source=/dev/null
+. "${APPDEST}/bin/variant.env"
 
 # shellcheck source=/dev/null
 [ -f "${PKGVAR}/settings.env" ] && . "${PKGVAR}/settings.env"
@@ -52,7 +57,8 @@ link_host_driver_libs() {
     fi
     echo "${dest}"
 }
-HOSTLIBS="$(link_host_driver_libs)"
+HOSTLIBS=""
+[ "${STRATA_FPK_GPU_VENDOR}" = nvidia ] && HOSTLIBS="$(link_host_driver_libs)"
 
 # ---- 环境 ---------------------------------------------------------------------
 export HOME="${HOME_DIR}"
@@ -62,7 +68,11 @@ mkdir -p "${TMPDIR}" "${XDG_DATA_HOME}" "${XDG_CONFIG_HOME}" "${XDG_STATE_HOME}"
 
 export LANG=C.UTF-8 PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
 export PATH="${APPDEST}/node/bin:${APPDEST}/control/python/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-export LD_LIBRARY_PATH="${HOSTLIBS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+if [ -n "${HOSTLIBS}" ]; then
+    export LD_LIBRARY_PATH="${HOSTLIBS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+else
+    unset LD_LIBRARY_PATH
+fi
 
 # 模型下载源（向导里选的）：HF 镜像站 / 官方 / ModelScope / 自定义。
 unset HF_ENDPOINT STRATA_SOURCE
@@ -78,8 +88,12 @@ export STRATA_INSTALL_DIR="${PKGVAR}/install"
 export STRATA_CONTROL_DIR="${APPDEST}/control"
 export STRATA_ENGINE_BUNDLE_DIR="${APPDEST}/engine-bundle"
 export STRATA_PACKAGED=1 STRATA_REAL_ENGINE=1 STRATA_NO_ACQUIRE=1 STRATA_NO_REPAIR_ACCESS=1
-# 只有 CUDA 引擎：同一台机器上的 AMD 卡（比如 MI50）不参与硬件识别和模型规划（packaging/fnos/patches/0001-nvidia-only.patch）。
-export STRATA_FPK_NVIDIA_ONLY=1
+# 这个包只带一种引擎：别的厂商的卡（同一台机器上的另一块显卡）不参与硬件识别和模型规划
+# （packaging/fnos/patches/0001-gpu-vendor.patch），Control 也只选这一种后端。
+export STRATA_FPK_GPU_VENDOR STRATA_ENGINE_BACKEND="${STRATA_FPK_ENGINE_BACKEND}"
+# gfx906（MI50 / MI60 / Radeon VII）不在上游 Control 的 AMD 支持名单里：本包的 Control 补丁加了这个开关
+# （packaging/fnos/patches/control/0001-gfx906-opt-in-and-backend.patch）。
+[ "${STRATA_FPK_VARIANT}" = gfx906 ] && export STRATA_EXPERIMENTAL_GFX906=1
 export NODE_ENV=production
 mkdir -p "${STRATA_HOME}" "${STRATA_COMPONENTS_DIR}" "${STRATA_INSTALL_DIR}/third_party"
 

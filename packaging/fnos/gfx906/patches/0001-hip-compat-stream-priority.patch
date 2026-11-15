@@ -1,0 +1,12 @@
+--- a/include/strata/platform/hip_compat/strata_hip.h	2026-11-15 16:39:41.130652466 +0800
++++ b/include/strata/platform/hip_compat/strata_hip.h	2026-11-15 16:39:41.574668808 +0800
+@@ -130,6 +130,9 @@
+ #define cudaHostGetDevicePointer hipHostGetDevicePointer
+ #define cudaStreamCreate hipStreamCreate
+ #define cudaStreamCreateWithFlags hipStreamCreateWithFlags
++// fnOS package: src/core/dflash2.cpp (the DFlash2 drafter's streams) uses these two; the gfx906 compat layer had no mapping for them
++#define cudaStreamCreateWithPriority hipStreamCreateWithPriority
++#define cudaDeviceGetStreamPriorityRange hipDeviceGetStreamPriorityRange
+ #define cudaStreamDestroy hipStreamDestroy
+ #define cudaStreamSynchronize hipStreamSynchronize
+ #define cudaStreamQuery hipStreamQuery

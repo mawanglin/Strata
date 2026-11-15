@@ -1,0 +1,16 @@
+--- a/server/hardware.mjs	2026-11-15 15:59:13.789232107 +0800
++++ b/server/hardware.mjs	2026-11-15 15:59:14.165245890 +0800
+@@ -195,6 +195,13 @@
+       for(const card of windowsOtherGpus(rows,dx))gpus.push({...card,index:gpus.length,unified:false,backend:'vulkan'});
+     }catch{}
+   }
++  // fnOS package: it carries one engine (CUDA or AMD gfx906). STRATA_FPK_GPU_VENDOR=nvidia|amd hides the cards of every other make, so a
++  // bigger card of another make in the same box (the engine has no code for it) is never chosen as "the" accelerator and the model
++  // plan is made for the card the engine drives.
++  const fpkVendor=process.env.STRATA_FPK_GPU_VENDOR;
++  if(fpkVendor&&gpus.some(g=>g.vendor===fpkVendor)){
++    for(let i=gpus.length-1;i>=0;i--)if(gpus[i].vendor!==fpkVendor)gpus.splice(i,1);
++  }
+   gpus.forEach((g,i)=>{g.index=i;});
+ 
+   return gpus;
