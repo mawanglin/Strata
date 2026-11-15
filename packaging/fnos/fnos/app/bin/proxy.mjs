@@ -3,15 +3,14 @@
 // 两种认证：
 //   - 网页（以及一切请求）：Basic Auth，用户名密码（set-password.mjs 写的 PROXY_AUTH_FILE）。
 //   - API（/v1/...，OpenAI / Anthropic 兼容接口）：另外接受 API Key，放在 "Authorization: Bearer <key>" 或 "x-api-key: <key>"
-//     里（set-api-key.mjs 写的 PROXY_API_KEY_FILE；文件不存在 = 没开 API Key 访问）。Claude Code、Codex 这类客户端只会发这种头。
+//     里。Key 只有一个，就是 Strata 自己的（网页“API 服务 → API 密钥”，存在 PROXY_HOST_STATE 那个 state.json 的 serving.apiKey；
+//     本地共享、Cloudflare 隧道、strata connect 用的也是它）。Strata 没设 Key 时，带 Key 的请求一律拒绝，/v1 不会因此敞开。
+//     Claude Code、Codex 这类客户端只会发这种头。
 // HTTPS（PROXY_TLS=on）：同一个端口同时收 HTTP 和 HTTPS（看连接的第一个字节是不是 TLS 握手）。证书优先用用户放在
 // PROXY_TLS_USER_DIR 里的 cert.pem + key.pem（比如从飞牛导出的正式证书），否则用 PROXY_TLS_DIR 里自动生成的自签名证书
 // （tls-cert.mjs，覆盖本机的主机名和各个 IP）。开启后网页走 HTTP 的会被 308 跳到 HTTPS；/v1 接口两种都收，已经配好的客户端不断。
-// Strata 网页里也可以设一个 API Key（Serving 页的 Local sharing / Cloudflare，存在 PROXY_HOST_STATE 那个 state.json 的
-// serving.apiKey）。设了它，宿主会对 /v1 再校验一次：所以这里认证通过、把客户端的头去掉之后，若宿主有自己的 Key，就换上它再转发，
-// 两边各设各的也不会对不上（客户端只需要飞牛设置里的那个 Key）。
-// 环境：PROXY_PORT、PROXY_UPSTREAM_PORT、PROXY_AUTH_FILE、PROXY_API_KEY_FILE（可选）、PROXY_TLS、PROXY_TLS_DIR、PROXY_TLS_USER_DIR、
-//       PROXY_HOST_STATE（可选）
+// 宿主设了 Key 就会对 /v1 再校验：这里认证通过、去掉客户端的头之后换上同一个 Key 转发（用户名密码登录的网页调 /v1 也一样）。
+// 环境：PROXY_PORT、PROXY_UPSTREAM_PORT、PROXY_AUTH_FILE、PROXY_HOST_STATE、PROXY_TLS、PROXY_TLS_DIR、PROXY_TLS_USER_DIR
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
@@ -24,7 +23,6 @@ import { selfSigned } from './tls-cert.mjs';
 const LISTEN = Number(process.env.PROXY_PORT);
 const UP = Number(process.env.PROXY_UPSTREAM_PORT);
 const AUTH_FILE = process.env.PROXY_AUTH_FILE;
-const API_KEY_FILE = process.env.PROXY_API_KEY_FILE || '';
 const HOST_STATE = process.env.PROXY_HOST_STATE || '';
 if (!LISTEN || !UP || !AUTH_FILE) { console.error('PROXY_PORT, PROXY_UPSTREAM_PORT and PROXY_AUTH_FILE are required'); process.exit(2); }
 
@@ -60,18 +58,6 @@ function authorized(req) {
   if (okUser && okPass) { passed.set(key, Date.now() + 5 * 60_000); if (passed.size > 200) passed.clear(); return true; }
   return false;
 }
-// ---- API Key（只用于 /v1/...）--------------------------------------------------------
-let apiKey = null, apiKeyMtime = -1;
-function apiKeyDigest() {
-  if (!API_KEY_FILE) return null;
-  let m;
-  try { m = statSync(API_KEY_FILE).mtimeMs; } catch { apiKey = null; apiKeyMtime = -1; return null; }   // 没有文件：没开
-  if (m !== apiKeyMtime) {
-    try { apiKey = Buffer.from(JSON.parse(readFileSync(API_KEY_FILE, 'utf8')).sha256, 'hex'); } catch { apiKey = null; }
-    apiKeyMtime = m;
-  }
-  return apiKey?.length === 32 ? apiKey : null;
-}
 const isApiPath = url => url === '/v1' || url.startsWith('/v1/') || url.startsWith('/v1?');
 /** null: the request carries no API key (Basic Auth decides); true / false: it carries one, right or wrong. */
 function apiKeyVerdict(req) {
@@ -79,8 +65,9 @@ function apiKeyVerdict(req) {
   const bearer = typeof header === 'string' && /^Bearer /i.test(header) ? header.slice(7).trim() : '';
   const alt = typeof req.headers['x-api-key'] === 'string' ? req.headers['x-api-key'].trim() : '';
   if (!bearer && !alt) return null;
-  const want = apiKeyDigest();
-  if (!want) return false;                // API Key 访问没开
+  const key = hostApiKey();
+  if (!key) return false;                 // Strata 里没设 Key：带 Key 的一律拒绝
+  const want = createHash('sha256').update(key).digest();
   // 两个头都算一遍、都比一遍（定长摘要，恒定时间），不让时间泄露带的是哪一个。
   const a = sameBytes(createHash('sha256').update(bearer).digest(), want);
   const b = sameBytes(createHash('sha256').update(alt).digest(), want);
@@ -150,7 +137,9 @@ async function onRequest(req, res) {
       if (isApiPath(req.url ?? '')) {
         // API 客户端：OpenAI / Anthropic 都能读懂的 JSON 错误；不带 WWW-Authenticate，免得浏览器弹登录框
         res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'Invalid or missing API key (set it in the fnOS app settings of Strata)' } }) + '\n');
+        const message = hostApiKey() ? 'Invalid or missing API key (the key is set in Strata: API Serving -> API key)'
+                                     : 'No API key is set in Strata yet: create one in Strata under API Serving -> API key, then use it in this app';
+        res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message } }) + '\n');
         return;
       }
       res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Strata", charset="UTF-8"', 'Content-Type': 'text/plain; charset=utf-8' });
@@ -258,5 +247,5 @@ if (TLS_ON) {
   }
 }
 front.on('error', e => { log(`cannot listen on ${LISTEN}: ${e.message}`); process.exit(1); });
-front.listen(LISTEN, '0.0.0.0', () => log(`listening on 0.0.0.0:${LISTEN} (${front === plain ? 'HTTP' : 'HTTP and HTTPS'}) -> ${upstreamOrigin}`));
+front.listen(LISTEN, '0.0.0.0', () => log(`listening on 0.0.0.0:${LISTEN} (${front === plain ? 'HTTP' : 'HTTP and HTTPS'}) -> ${upstreamOrigin}; API key for /v1: ${hostApiKey() ? 'set in Strata' : 'none yet (create one in Strata: API Serving -> API key)'}`));
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { front.close(); process.exit(0); });

@@ -6,7 +6,6 @@ LOG_FILE="${TRIM_PKGVAR}/strata.log"
 PID_FILE="${TRIM_PKGVAR}/strata.pid"
 SETTINGS_FILE="${TRIM_PKGVAR}/settings.env"
 AUTH_FILE="${TRIM_PKGVAR}/home/.auth.json"
-API_KEY_FILE="${TRIM_PKGVAR}/home/.api-key.json"
 LOG_MAX_BYTES="${STRATA_LOG_MAX_BYTES:-$((10 * 1024 * 1024))}"
 LOG_KEEP=2                                          # 保留的历史日志：strata.log.1 … .N
 LOG_CHECK_SECONDS="${STRATA_LOG_CHECK_SECONDS:-60}"
@@ -84,7 +83,7 @@ apply_wizard_settings() {
     keep() { [ -z "$1" ] || [ "$1" = "keep" ]; }
 
     local port="${wizard_port:-}" user="${wizard_username:-}" source="${wizard_source:-}" custom="${wizard_endpoint:-}"
-    local api="${wizard_api:-}" models="${wizard_models:-}" https="${wizard_https:-}"
+    local models="${wizard_models:-}" https="${wizard_https:-}"
     local endpoint="${cur_endpoint}" ms="${cur_ms}"
     keep "${port}" && port="${cur_port}"
     keep "${user}" && user="${cur_user}"
@@ -107,7 +106,6 @@ apply_wizard_settings() {
             *) fail "模型下载源无效：${source}" ;;
         esac
     fi
-    [[ "${api}" =~ ^(true|false|keep)?$ ]] || fail "API 访问设置无效：${api}"
     [[ "${models}" =~ ^(own|shared|other)$ ]] || fail "模型目录设置无效：${models}"
     [[ "${https}" =~ ^(on|off)$ ]] || fail "HTTPS 设置无效：${https}"
 
@@ -125,23 +123,7 @@ apply_wizard_settings() {
         fail "修改用户名时需要同时输入新密码"
     fi
 
-    # API Key（只用于 /v1 接口；网页仍用用户名密码）。保持不变：什么也不动；关闭：删掉；开启：输入了新 Key 就换，没输入就沿用已保存的。
-    case "${api}" in
-        ""|keep) [ -n "${wizard_api_key:-}" ] && api=true ;;   # 选“保持不变”但填了新 Key：当作开启并换 Key
-    esac
-    if [ "${api}" = "true" ]; then
-        if [ -n "${wizard_api_key:-}" ]; then
-            printf '%s\n' "${wizard_api_key}" \
-                | exec_as_app_user "${TRIM_APPDEST}/node/bin/node" "${TRIM_APPDEST}/bin/set-api-key.mjs" "${API_KEY_FILE}" \
-                >> "${LOG_FILE}" 2>&1 || fail "API Key 无效：至少 16 位，只能是字母、数字、- 和 _"
-            log_msg "API key set"
-        elif [ ! -s "${API_KEY_FILE}" ]; then
-            fail "开启 API 访问时需要设置 API Key"
-        fi
-    elif [ "${api}" = "false" ]; then
-        rm -f "${API_KEY_FILE}"
-        log_msg "API key access turned off"
-    fi
+    # API Key 不在这里：/v1 只认 Strata 自己的 Key（网页“API 服务 → API 密钥”）。旧版本向导的 wizard_api / wizard_api_key 忽略。
 
     {
         echo "STRATA_FPK_PORT=${port}"

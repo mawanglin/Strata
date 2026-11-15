@@ -1,5 +1,5 @@
 #!/bin/bash
-# 不需要 GPU、不需要飞牛：检查认证代理（Basic Auth、/v1 的 API Key、转发、流式响应、WebSocket 升级、Origin 改写）和密码 / Key 的保存。
+# 不需要 GPU、不需要飞牛：检查认证代理（Basic Auth、/v1 的 API Key——Strata 自己的那一个、转发、流式响应、WebSocket 升级、Origin 改写、HTTPS）和密码的保存。
 # 用法： packaging/fnos/tests/test_proxy.sh      （需要 node 24 和 curl）
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -25,11 +25,8 @@ JS
 node "${T}/up.mjs" & 
 printf 's3cret-pass\n' | node "${BIN}/set-password.mjs" admin "${T}/auth.json"
 check "password file is 0600 and has no plaintext" '[ "$(stat -c %a "${T}/auth.json")" = 600 ] && ! grep -q s3cret-pass "${T}/auth.json"'
-check "API key shorter than 16 is refused" '! printf "short\n" | node "${BIN}/set-api-key.mjs" "${T}/key.json" 2>/dev/null && [ ! -e "${T}/key.json" ]'
-printf 'sk-test_0123456789abcdef\n' | node "${BIN}/set-api-key.mjs" "${T}/key.json"
-check "API key file is 0600 and has no plaintext" '[ "$(stat -c %a "${T}/key.json")" = 600 ] && ! grep -q sk-test_0123456789abcdef "${T}/key.json"'
 echo '{"serving":{"apiKey":null}}' > "${T}/state.json"
-PROXY_PORT=${PX} PROXY_UPSTREAM_PORT=${UP} PROXY_AUTH_FILE="${T}/auth.json" PROXY_API_KEY_FILE="${T}/key.json" PROXY_HOST_STATE="${T}/state.json" \
+PROXY_PORT=${PX} PROXY_UPSTREAM_PORT=${UP} PROXY_AUTH_FILE="${T}/auth.json" PROXY_HOST_STATE="${T}/state.json" \
     node "${BIN}/proxy.mjs" > "${T}/proxy.log" 2>&1 &
 for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:${PX}/" && break; sleep 0.1; done
 
@@ -43,27 +40,23 @@ check "Host is rewritten to the upstream" 'echo "${R}" | grep -q "\"host\":\"127
 check "Origin is rewritten"               'echo "${R}" | grep -q "\"origin\":\"http://127.0.0.1:${UP}\""'
 check "Authorization is not forwarded"    'echo "${R}" | grep -q "\"auth\":null"'
 check "request body is forwarded"         'echo "${R}" | grep -q "\"body\":\"x=1\""'
-K=sk-test_0123456789abcdef
-check "API: Bearer key on /v1 -> 200"         '[ "$(code -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/v1/models)" = 200 ]'
-check "API: x-api-key on /v1 -> 200"          '[ "$(code -H "x-api-key: ${K}" -X POST -d "{}" http://127.0.0.1:${PX}/v1/messages)" = 200 ]'
-RK="$(curl -s -H "Authorization: Bearer ${K}" -H "x-api-key: ${K}" http://127.0.0.1:${PX}/v1/models)"
-check "API: key headers are not forwarded"    'echo "${RK}" | grep -q "\"auth\":null"'
-check "API: wrong key -> 401 JSON, no login prompt" '[ "$(curl -s -o "${T}/w" -w "%{http_code}" -H "Authorization: Bearer nope-nope-nope-nope" http://127.0.0.1:${PX}/v1/models)" = 401 ] && grep -q authentication_error "${T}/w" && ! curl -sI -H "Authorization: Bearer nope" http://127.0.0.1:${PX}/v1/models | grep -qi www-authenticate'
-check "API: key outside /v1 -> 401"           '[ "$(code -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/api/hardware)" = 401 ]'
-check "API: /v1x is not an API path"          '[ "$(code -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/v1x)" = 401 ]'
-check "API: Basic Auth still works on /v1"    '[ "$(code -u admin:s3cret-pass http://127.0.0.1:${PX}/v1/models)" = 200 ]'
-node "${BIN}/set-api-key.mjs" "${T}/key.json" --clear
-check "API: key access off -> key refused"    '[ "$(code -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/v1/models)" = 401 ]'
-printf '%s\n' "${K}" | node "${BIN}/set-api-key.mjs" "${T}/key.json"
-check "API: key turned on again without restart" '[ "$(code -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/v1/models)" = 200 ]'
-# Strata 网页里也设了自己的 Key（state.json 的 serving.apiKey）：/v1 转发时换上它，两边各设各的也对得上
-sleep 0.05; echo '{"serving":{"apiKey":"sk-strata-host-secret"}}' > "${T}/state.json"
-check "host key set: /v1 with our key -> host gets its own key" '[ "$(curl -s -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/v1/models | grep -o "\"auth\":\"[^\"]*\"")" = "\"auth\":\"Bearer sk-strata-host-secret\"" ]'
-check "host key set: /v1 with Basic Auth -> host gets its own key" 'curl -s -u admin:s3cret-pass http://127.0.0.1:${PX}/v1/models | grep -q "\"auth\":\"Bearer sk-strata-host-secret\""'
-check "host key set: other paths -> no key forwarded" 'curl -s -u admin:s3cret-pass http://127.0.0.1:${PX}/api/x | grep -q "\"auth\":null"'
-check "host key set: a wrong client key is still refused" '[ "$(code -H "Authorization: Bearer nope-nope-nope-nope" http://127.0.0.1:${PX}/v1/models)" = 401 ]'
-sleep 0.05; echo '{"serving":{"apiKey":null}}' > "${T}/state.json"
-check "host key removed (no restart): nothing forwarded" 'curl -s -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/v1/models | grep -q "\"auth\":null"'
+# ---- /v1 的 API Key：只有 Strata 自己的那一个（state.json 的 serving.apiKey，网页“API 服务 → API 密钥”）---------------
+K=sk-strata-host-secret-0123
+check "no Strata key yet: a key on /v1 is refused (never open)" '[ "$(curl -s -o "${T}/w" -w "%{http_code}" -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/v1/models)" = 401 ] && grep -q "No API key is set in Strata" "${T}/w"'
+check "no Strata key yet: Basic Auth still reaches /v1, nothing forwarded" 'curl -s -u admin:s3cret-pass http://127.0.0.1:${PX}/v1/models | grep -q "\"auth\":null"'
+sleep 0.05; echo '{"serving":{"apiKey":"'"${K}"'"}}' > "${T}/state.json"
+check "Strata key set (no restart): Bearer on /v1 -> 200"       '[ "$(code -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/v1/models)" = 200 ]'
+check "Strata key: x-api-key on /v1 -> 200"                     '[ "$(code -H "x-api-key: ${K}" -X POST -d "{}" http://127.0.0.1:${PX}/v1/messages)" = 200 ]'
+check "Strata key: the host gets its key as Bearer, no x-api-key" 'R="$(curl -s -H "x-api-key: ${K}" http://127.0.0.1:${PX}/v1/models)"; echo "$R" | grep -q "\"auth\":\"Bearer ${K}\""'
+check "Strata key: Basic Auth on /v1 -> host gets the key"      'curl -s -u admin:s3cret-pass http://127.0.0.1:${PX}/v1/models | grep -q "\"auth\":\"Bearer ${K}\""'
+check "Strata key: other paths -> no key forwarded"             'curl -s -u admin:s3cret-pass http://127.0.0.1:${PX}/api/x | grep -q "\"auth\":null"'
+check "wrong key -> 401 JSON, no login prompt" '[ "$(curl -s -o "${T}/w" -w "%{http_code}" -H "Authorization: Bearer nope-nope-nope-nope" http://127.0.0.1:${PX}/v1/models)" = 401 ] && grep -q authentication_error "${T}/w" && ! curl -sI -H "Authorization: Bearer nope" http://127.0.0.1:${PX}/v1/models | grep -qi www-authenticate'
+check "the key outside /v1 -> 401"             '[ "$(code -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/api/hardware)" = 401 ]'
+check "/v1x is not an API path"                '[ "$(code -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/v1x)" = 401 ]'
+check "Basic Auth still works on /v1"          '[ "$(code -u admin:s3cret-pass http://127.0.0.1:${PX}/v1/models)" = 200 ]'
+sleep 0.05; echo '{"serving":{"apiKey":"sk-strata-another-key-99"}}' > "${T}/state.json"
+check "key changed in Strata (no restart): the old one is refused" '[ "$(code -H "Authorization: Bearer ${K}" http://127.0.0.1:${PX}/v1/models)" = 401 ]'
+sleep 0.05; echo '{"serving":{"apiKey":"'"${K}"'"}}' > "${T}/state.json"
 S="$(curl -sN -u admin:s3cret-pass "http://127.0.0.1:${PX}/stream")"
 check "streamed response arrives whole"   '[ "$(echo "${S}" | grep -c "^data:")" = 3 ]'
 L="$(curl -s -D - -o /dev/null -u admin:s3cret-pass "http://127.0.0.1:${PX}/redir" | tr -d "\r" | sed -n "s/^[Ll]ocation: //p")"
@@ -76,7 +69,7 @@ const s=require("net").connect(+process.argv[1],"127.0.0.1");let o="";s.on("data
 check "WebSocket without credentials -> 401" 'echo "${W2}" | grep -q "401"'
 # ---- HTTPS（PROXY_TLS=on）：同一个端口两种协议 ------------------------------------------------
 PS=$((PX + 1)); TLSD="${T}/tls"; USERD="${T}/usertls"
-PROXY_PORT=${PS} PROXY_UPSTREAM_PORT=${UP} PROXY_AUTH_FILE="${T}/auth.json" PROXY_API_KEY_FILE="${T}/key.json" \
+PROXY_PORT=${PS} PROXY_UPSTREAM_PORT=${UP} PROXY_AUTH_FILE="${T}/auth.json" PROXY_HOST_STATE="${T}/state.json" \
     PROXY_TLS=on PROXY_TLS_DIR="${TLSD}" PROXY_TLS_USER_DIR="${USERD}" node "${BIN}/proxy.mjs" > "${T}/proxy-tls.log" 2>&1 &
 TLSPID=$!
 for _ in $(seq 1 50); do [ -s "${TLSD}/cert.pem" ] && curl -sk -o /dev/null "https://127.0.0.1:${PS}/" && break; sleep 0.1; done

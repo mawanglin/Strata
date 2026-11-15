@@ -4,7 +4,7 @@
         "items": [
             {
                 "type": "tips",
-                "helpText": "Strata 自身没有登录功能，网页端口不经过飞牛登录，所以<b>必须设置访问密码</b>：任何能访问该端口的人都可以使用这台 NAS 上的显卡和模型。打开方式：点飞牛桌面上的 Strata 图标，或直接访问 <b>http://NAS-IP:端口</b>，登录用下面的用户名和密码。注意这是明文 HTTP，请只在可信的局域网里使用。模型存放在共享文件夹「@SHARE@」的 models 里（卸载应用不会删除）。"
+                "helpText": "Strata 自身没有登录功能，网页端口不经过飞牛登录，所以<b>必须设置访问密码</b>：任何能访问该端口的人都可以使用这台 NAS 上的显卡和模型。打开方式：点飞牛桌面上的 Strata 图标，或直接访问 <b>http://NAS-IP:端口</b>，登录用下面的用户名和密码。注意这是明文 HTTP，请只在可信的局域网里使用。模型存放在共享文件夹「@SHARE@」的 models 里（卸载应用不会删除）。<br>给 Claude Code、Codex、OpenCode 等程序用的 <b>API Key 在 Strata 网页里设</b>：打开 Strata → 左侧<b>“API 服务”</b> → <b>“API 密钥”</b> → <b>“创建 API 密钥”</b> → <b>“使用此密钥”</b>。程序访问 <b>http://NAS-IP:端口/v1</b>（OpenAI 兼容）或 <b>http://NAS-IP:端口</b>（Anthropic 兼容），Key 放在 Authorization: Bearer 或 x-api-key 里；本地共享、Cloudflare 隧道、strata connect 用的也是这个 Key。没设 Key 时程序连不上（只能登录网页用）。"
             },
             {
                 "type": "text",
@@ -120,42 +120,6 @@
                     {
                         "label": "授权目录里的文件夹（其下的 Strata 子文件夹；两个 Strata 授权同一个就共用）",
                         "value": "shared"
-                    }
-                ]
-            }
-        ]
-    },
-    {
-        "stepTitle": "API 访问（可选）",
-        "items": [
-            {
-                "type": "tips",
-                "helpText": "给 Claude Code、Codex、OpenCode 等程序当本地模型后端用：它们访问 <b>http://NAS-IP:端口/v1</b>（OpenAI 兼容）或 <b>http://NAS-IP:端口</b>（Anthropic 兼容），用下面的 API Key 认证（放在 <b>Authorization: Bearer</b> 或 <b>x-api-key</b> 里）。只对 /v1 接口有效，网页仍然用用户名密码登录。也是明文 HTTP，只在可信局域网里用。程序只需要这里设的 Key；Strata 网页里另设的 Key（服务页的本地共享 / Cloudflare 用）不影响这里。"
-            },
-            {
-                "type": "radio",
-                "field": "wizard_api",
-                "label": "API Key 访问",
-                "initValue": "false",
-                "options": [
-                    {
-                        "label": "关闭：只有登录网页的人能用",
-                        "value": "false"
-                    },
-                    {
-                        "label": "开启：程序可以用 API Key 调用 /v1 接口",
-                        "value": "true"
-                    }
-                ]
-            },
-            {
-                "type": "password",
-                "field": "wizard_api_key",
-                "label": "API Key（开启时必填；至少 16 位，字母、数字、- 和 _）",
-                "rules": [
-                    {
-                        "pattern": "^([A-Za-z0-9_-]{16,128})?$",
-                        "message": "至少 16 位，只能是字母、数字、- 和 _"
                     }
                 ]
             }

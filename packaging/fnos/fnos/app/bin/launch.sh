@@ -193,17 +193,21 @@ cleanup() {
 trap 'EXIT_CODE=0; cleanup' TERM INT
 
 # 反向代理：网页端口 0.0.0.0:${PORT}，Basic Auth，转发到宿主。
+# 旧版本在飞牛设置里存过一个 API Key（只有哈希）：现在 /v1 只认 Strata 自己的 Key（网页“API 服务 → API 密钥”），旧的不再用。
+if [ -e "${HOME_DIR}/.api-key.json" ]; then
+    rm -f "${HOME_DIR}/.api-key.json"
+    log "the API key of the fnOS app settings is no longer used: programs now use Strata's own key (create it in Strata under API Serving -> API key)"
+fi
 if [ ! -s "${HOME_DIR}/.auth.json" ]; then
     log "ERROR: no access password set (${HOME_DIR}/.auth.json); open the app's settings and set one"
     exit 1
 fi
 PROXY_PORT="${PORT}" PROXY_UPSTREAM_PORT="${BACKEND_PORT}" PROXY_AUTH_FILE="${HOME_DIR}/.auth.json" \
-    PROXY_API_KEY_FILE="${HOME_DIR}/.api-key.json" \
     PROXY_TLS="${STRATA_FPK_HTTPS:-off}" PROXY_TLS_DIR="${HOME_DIR}/tls" PROXY_TLS_USER_DIR="${SHARE}/tls" \
     PROXY_HOST_STATE="${STRATA_HOME}/data/state.json" \
     "${NODE}" "${APPDEST}/bin/proxy.mjs" &
 CHILD_PIDS+=($!)
-log "web port ${PORT} -> Strata host 127.0.0.1:${BACKEND_PORT} (API key access: $([ -s "${HOME_DIR}/.api-key.json" ] && echo on || echo off))"
+log "web port ${PORT} -> Strata host 127.0.0.1:${BACKEND_PORT}"
 
 # 宿主意外退出（内存不足被杀、崩溃……）时重启：${MAX_RESTARTS} 次 / ${RESTART_WINDOW} 秒，间隔递增；
 # 超过就放弃并停止应用，避免起不来的东西无限循环。被要求停止（TERM）不会重启。

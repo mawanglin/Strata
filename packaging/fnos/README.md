@@ -43,7 +43,7 @@
 
 ### 给 Claude Code、Codex 等程序用（API Key）
 
-向导（以及应用设置）的“API 访问”里开启并设置 **API Key**（16 位以上，字母、数字、- 和 _；只保存 SHA-256）后，程序可以不登录网页、直接用 Key 调用 `/v1` 接口：
+**只有一个 Key，就是 Strata 自己的**：打开 Strata 网页 → 左侧 **“API 服务”** → **“API 密钥”** → **“创建 API 密钥”**（可以“再生成一个”）→ **“使用此密钥”**。本地共享、Cloudflare 隧道、`strata connect` 用的也是它。设好后程序可以不登录网页、直接用 Key 调用 `/v1` 接口：
 
 | 协议 | 地址 | Key 放在 |
 |---|---|---|
@@ -56,7 +56,8 @@ ANTHROPIC_BASE_URL=http://NAS-IP:47831 ANTHROPIC_API_KEY=<Key> ANTHROPIC_MODEL=<
 ```
 
 - Key 只对 `/v1/...` 有效；带 Key 访问网页和 `/api` 会被拒（401），网页仍然只能用户名密码登录。错 Key 返回 401 的 JSON 错误（不会弹浏览器登录框）。
-- 认证由本包的代理做，**程序只需要飞牛设置里的这个 Key**。Strata 网页里也能设一个 Key（Serving 页的 Local sharing / Cloudflare 用，存在 `home/strata/data/state.json` 的 `serving.apiKey`）：设了它，宿主会对 `/v1` 再校验一次，所以代理认证通过后会换上宿主的 Key 再转发，两边各设各的也不会对不上（`tests/test_proxy.sh` 有 5 项检查；改 Strata 网页里的 Key 不用重启）。2026-11-16 在 NAS 上实测：在 Strata 那一层设了 Key 后，绕过代理直接访问宿主是 401（宿主在校验），程序只用飞牛设置里的 Key 走代理（Bearer 和 x-api-key）都是 200，错的 Key 仍是 401。
+- 认证由本包的代理做：它拿 Strata 的 Key（`home/strata/data/state.json` 的 `serving.apiKey`）来校验，通过后用同一个 Key 转发给宿主；**Strata 里没设 Key 时，带 Key 的请求一律拒绝**（401，提示去 Strata 里创建），`/v1` 不会因为没设 Key 而敞开。在 Strata 里换 Key 不用重启，旧 Key 立刻失效。
+- 为什么不在飞牛设置里另设一个：早期版本那样做过，结果有两个设置的地方——飞牛设置页显示默认值、一保存就把 Key 删了；两边各设一个时还会对不上。统一成 Strata 自己的 Key 后这两类问题都没有了。从旧版本升级时，飞牛设置里那个 Key（只存了哈希，取不回原文）不再使用，启动时删除并在日志里说明：**在 Strata 里创建一个 Key，把程序里的 Key 换成它**。
 - Claude Code 不认识 Strata 的模型名，会提示 “assumes a context window of 1m tokens”，实际窗口是模型加载时的上下文（如 128K），长会话前按它提示的文档设一下窗口。
 - 明文 HTTP，同样只在可信局域网里用。
 
@@ -193,7 +194,7 @@ sudo /var/apps/strata/target/bin/strata --help
 - 推理：写 `is_prime` 函数（162 token，7.4 秒，代码正确），`17*23` 回答 391；**解码平均约 60 tokens/s，峰值约 78**。上游的社区报告是 2 张 MI50 16 GB 跑同一个模型约 50 tok/s。
 - 停止约 6 秒，MI50 显存从 31352 MiB 回到 10 MiB。
 - **图片**（上游文档写着 gfx906 “没做过”）：Coder 带图片重新准备后（补下 `mmproj-Qwen3.8-Flash-Next-BF16.gguf`），32 GB 显存下 Strata 选了 **GPU 读图器 `strata-vision-hip`**，测试图回答 “A red circle and a blue square are shown above the number 742.”，6 秒。
-- **API Key** 和 Claude Code 的测试就是在这个版本上做的（见 CUDA 版实测）。
+- API Key 和 Claude Code 的测试就是在这个版本上做的（见 CUDA 版实测）。
 - **Qwen3.8-Flash-Next IQ3_XXS（上游首推的 ISTA-DASLab 版本，75.8 GB）**，2026-11-15 实测：hf-mirror.com 下载约 5 分钟 + 校验 3 分钟，进共享模型库；加载 276 秒（第一次从机械硬盘读 79 GB），128K 上下文、同时 2 个请求。
 
   | 测试 | 用时 | 结果 | 生成速度 |
@@ -225,8 +226,8 @@ VARIANT=gfx906 ENGINE_COMPONENT=/path/to/work/out/components/engine/0.1.59-linux
 `build.sh` 需要 Node 24.12+、python3、curl、`fnpack`（`~/.local/bin/fnpack` 或 `FNPACK=`）、网络，每个变体的工作目录约 3 GB（`packaging/fnos/build/<变体>/`，下载缓存共用 `packaging/fnos/build/cache/`）。版本号形如 `0.2.13-cob.1`（上游 `0.2.13` + 本地小版本，符合 fork 规则）。换上游版本时同时改 `UPSTREAM_TAG`、`CONTROL_ASSET`、`ENGINE_ASSET`；校验值从该 release 的 `SHA256SUMS.txt` 自动取。
 
 ```bash
-packaging/fnos/tests/test_proxy.sh             # 认证代理（用户名密码、/v1 的 API Key、宿主自己的 Key、转发、流式、WebSocket、HTTPS），41 项
-packaging/fnos/tests/test_settings.sh          # 安装 / 设置向导的处理（“保持不变”），11 项
+packaging/fnos/tests/test_proxy.sh             # 认证代理（用户名密码、/v1 的 API Key（Strata 自己的）、转发、流式、WebSocket、HTTPS），36 项
+packaging/fnos/tests/test_settings.sh          # 安装 / 设置向导的处理（“保持不变”），8 项
 packaging/fnos/tests/test_context_fallback.sh  # Qwen3.6 上下文自动降档的判断，11 项
 packaging/fnos/tests/test_models_dir.sh        # 模型目录的选择（授权目录），8 项
 # 都不需要 GPU / 飞牛
@@ -249,7 +250,6 @@ fnos/                     fpk 骨架（@APPNAME@ 等占位符由 build.sh 替换
     ├── bin/tls-cert.mjs  自签名证书（纯 Node）
     ├── bin/strata        终端命令入口（sudo 运行，切到应用用户和应用的环境）
     ├── bin/set-password.mjs   网页密码（scrypt）
-    ├── bin/set-api-key.mjs    API Key（SHA-256）
     └── ui/               飞牛桌面入口（直接打开网页端口）
 tests/test_proxy.sh       认证代理的本地测试
 build/                    构建缓存（不入库）；成品在仓库根目录的 dist/（不入库）
