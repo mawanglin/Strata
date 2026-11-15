@@ -64,6 +64,46 @@ check "WebSocket upgrade passes through"  'echo "${W}" | grep -q "HELLO-WS"'
 W2="$(printf 'GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n' | timeout 8 node -e '
 const s=require("net").connect(+process.argv[1],"127.0.0.1");let o="";s.on("data",d=>o+=d);s.on("close",()=>{console.log(o);process.exit()});process.stdin.pipe(s,{end:false});' "${PX}")"
 check "WebSocket without credentials -> 401" 'echo "${W2}" | grep -q "401"'
+# ---- HTTPS（PROXY_TLS=on）：同一个端口两种协议 ------------------------------------------------
+PS=$((PX + 1)); TLSD="${T}/tls"; USERD="${T}/usertls"
+PROXY_PORT=${PS} PROXY_UPSTREAM_PORT=${UP} PROXY_AUTH_FILE="${T}/auth.json" PROXY_API_KEY_FILE="${T}/key.json" \
+    PROXY_TLS=on PROXY_TLS_DIR="${TLSD}" PROXY_TLS_USER_DIR="${USERD}" node "${BIN}/proxy.mjs" > "${T}/proxy-tls.log" 2>&1 &
+TLSPID=$!
+for _ in $(seq 1 50); do [ -s "${TLSD}/cert.pem" ] && curl -sk -o /dev/null "https://127.0.0.1:${PS}/" && break; sleep 0.1; done
+check "a self-signed certificate is made (0600 key)"  '[ -s "${TLSD}/cert.pem" ] && [ "$(stat -c %a "${TLSD}/key.pem")" = 600 ]'
+check "HTTPS, certificate checked as CA -> 200"       '[ "$(code --cacert "${TLSD}/cert.pem" -u admin:s3cret-pass https://127.0.0.1:${PS}/)" = 200 ]'
+check "HTTPS without credentials -> 401"              '[ "$(code --cacert "${TLSD}/cert.pem" https://127.0.0.1:${PS}/)" = 401 ]'
+check "HTTP page -> 308 to https on the same port"    '[ "$(curl -s -o /dev/null -w "%{http_code} %{redirect_url}" http://127.0.0.1:${PS}/x?y=1)" = "308 https://127.0.0.1:${PS}/x?y=1" ]'
+check "HTTP /v1 with the API key is not redirected"   '[ "$(code -H "Authorization: Bearer ${K}" http://127.0.0.1:${PS}/v1/models)" = 200 ]'
+check "HTTPS /v1 with the API key -> 200"             '[ "$(code --cacert "${TLSD}/cert.pem" -H "x-api-key: ${K}" https://127.0.0.1:${PS}/v1/models)" = 200 ]'
+check "HTTPS stream arrives whole"                    '[ "$(curl -sN --cacert "${TLSD}/cert.pem" -u admin:s3cret-pass https://127.0.0.1:${PS}/stream | grep -c "^data:")" = 3 ]'
+WS="$(node -e '
+const tls=require("tls"),fs=require("fs");
+const s=tls.connect({port:+process.argv[1],host:"127.0.0.1",ca:fs.readFileSync(process.argv[2]),servername:"localhost"},()=>{
+  s.write("GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nAuthorization: Basic "+Buffer.from("admin:s3cret-pass").toString("base64")+"\r\n\r\n");});
+let o="";s.on("data",d=>o+=d);s.on("close",()=>{console.log(o);process.exit()});setTimeout(()=>{console.log(o);process.exit()},3000);' "${PS}" "${TLSD}/cert.pem")"
+check "WebSocket upgrade over HTTPS"                  'echo "${WS}" | grep -q HELLO-WS'
+FP1="$(openssl x509 -in "${TLSD}/cert.pem" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2)"
+kill ${TLSPID} 2>/dev/null; wait ${TLSPID} 2>/dev/null
+# 用户自己的证书优先
+mkdir -p "${USERD}" && node -e '
+import("'"${BIN}"'/tls-cert.mjs").then(({selfSigned})=>{const {key,cert}=selfSigned({commonName:"user-cert",hosts:["localhost"],ips:["127.0.0.1"]});
+require("fs").writeFileSync(process.argv[1]+"/cert.pem",cert);require("fs").writeFileSync(process.argv[1]+"/key.pem",key);});' "${USERD}"
+PROXY_PORT=${PS} PROXY_UPSTREAM_PORT=${UP} PROXY_AUTH_FILE="${T}/auth.json" PROXY_TLS=on PROXY_TLS_DIR="${TLSD}" PROXY_TLS_USER_DIR="${USERD}" \
+    node "${BIN}/proxy.mjs" > "${T}/proxy-tls2.log" 2>&1 &
+TLSPID=$!
+for _ in $(seq 1 50); do curl -sk -o /dev/null "https://127.0.0.1:${PS}/" && break; sleep 0.1; done
+check "your own cert.pem / key.pem are used"          '[ "$(code --cacert "${USERD}/cert.pem" -u admin:s3cret-pass https://127.0.0.1:${PS}/)" = 200 ] && grep -q "your certificate" "${T}/proxy-tls2.log"'
+kill ${TLSPID} 2>/dev/null; wait ${TLSPID} 2>/dev/null
+# 证书和私钥不配对：不用它，退回只有 HTTP，日志里说明
+cp "${TLSD}/key.pem" "${USERD}/key.pem"
+PROXY_PORT=${PS} PROXY_UPSTREAM_PORT=${UP} PROXY_AUTH_FILE="${T}/auth.json" PROXY_TLS=on PROXY_TLS_DIR="${TLSD}" PROXY_TLS_USER_DIR="${USERD}" \
+    node "${BIN}/proxy.mjs" > "${T}/proxy-tls3.log" 2>&1 &
+TLSPID=$!
+for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:${PS}/" && break; sleep 0.1; done
+check "a key that does not match -> plain HTTP, said in the log" '[ "$(code -u admin:s3cret-pass http://127.0.0.1:${PS}/)" = 200 ] && grep -q "does not belong" "${T}/proxy-tls3.log"'
+kill ${TLSPID} 2>/dev/null; wait ${TLSPID} 2>/dev/null
+
 kill %1 2>/dev/null; sleep 0.3
 check "upstream down -> 502 with the starting page" '[ "$(code -u admin:s3cret-pass http://127.0.0.1:${PX}/)" = 502 ]'
 

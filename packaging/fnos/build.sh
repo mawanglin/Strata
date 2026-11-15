@@ -198,7 +198,7 @@ im = Image.open('${ICON_SRC}').convert('RGBA')
 for size, dest in ((64, '${PKG}/ICON.PNG'), (256, '${PKG}/ICON_256.PNG'), (64, '${PKG}/app/ui/images/icon_64.png'), (256, '${PKG}/app/ui/images/icon_256.png')):
     im.resize((size, size), Image.LANCZOS).save(dest)
 "
-chmod +x "${PKG}"/cmd/* "${PKG}"/app/bin/launch.sh
+chmod +x "${PKG}"/cmd/* "${PKG}"/app/bin/launch.sh "${PKG}"/app/bin/strata
 # 这个包是哪个变体：launch.sh 读它决定显卡厂商、引擎后端，以及要不要链接宿主机的 NVIDIA 驱动库。
 cat > "${PKG}/app/bin/variant.env" <<VENV
 STRATA_FPK_VARIANT=${VARIANT}
@@ -206,6 +206,8 @@ STRATA_FPK_GPU_VENDOR=${GPU_VENDOR}
 STRATA_FPK_ENGINE_BACKEND=${ENGINE_BACKEND}
 STRATA_FPK_OTHER_APP=${OTHER_APP}
 STRATA_FPK_OTHER_SHARE=${OTHER_SHARE}
+STRATA_FPK_APPNAME=${APPNAME}
+STRATA_FPK_SHARE=${SHARE}
 VENV
 
 NODE_FULL="$("${APP}/node/bin/node" --version)"

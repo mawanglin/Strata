@@ -22,7 +22,7 @@ NODE="${APPDEST}/node/bin/node"
 [ -f "${PKGVAR}/settings.env" ] && . "${PKGVAR}/settings.env"
 PORT="${STRATA_FPK_PORT:-47831}"
 
-log() { echo "$(date '+%F %T') [launch] $*"; }
+log() { echo "$(date '+%F %T') [launch] $*" >&2; }   # 标准错误：运行时和标准输出一起进 strata.log；exec 模式（bin/strata）不混进命令输出
 
 # ---- 数据位置 ---------------------------------------------------------------
 HOME_DIR="${PKGVAR}/home"
@@ -34,31 +34,35 @@ SHARE="${SHARE%%:*}"
 [ -n "${SHARE}" ] && [ -d "${SHARE}" ] || SHARE="${PKGVAR}/share"
 mkdir -p "${SHARE}/models" "${SHARE}/workspace"
 
-# ---- 模型目录：两个 Strata（NVIDIA 版和 gfx906 版）可以共用一个 -----------------------
-# 飞牛的共享文件夹由它自己的 Trim-ACL 管（不是 POSIX ACL），应用（包括 cmd/ 脚本）以应用用户运行，改不了别的应用的目录：
-# 要用另一个 Strata 的模型目录，得在本应用设置的“授权目录”里加上它的共享文件夹（或其中的 models），飞牛通过
-# TRIM_DATA_ACCESSIBLE_PATHS 传进来。只认对方那个固定的共享文件夹（variant.env 的 STRATA_FPK_OTHER_SHARE）。
+# ---- 模型目录：本应用的共享文件夹，或用户授权给本应用的文件夹（两个 Strata 授权同一个就共用） ----------
+# 飞牛的共享文件夹由它自己的 Trim-ACL 管，应用（包括 cmd/ 脚本）以应用用户运行，改不了别的目录的权限；“授权目录”是飞牛
+# 给应用开放别的文件夹的正式办法（它给这个文件夹加上应用用户的 Trim-ACL），通过 TRIM_DATA_ACCESSIBLE_PATHS 传进来。
+#   - 授权的是用户自己的文件夹（如 /vol1/1000/Model）：模型放进它的 Strata 子文件夹，不和别的东西混在一起；
+#   - 授权的是另一个 Strata 的共享文件夹（variant.env 的 STRATA_FPK_OTHER_SHARE）：用它的 models。
+# 取第一个能写的；都不能用时退回本应用自己的，日志里说明。
 MODELS_DIR="${SHARE}/models"
-if [ "${STRATA_FPK_MODELS:-own}" = "other" ]; then
-    other_models=""
-    IFS=':' read -r -a _authorized <<< "${TRIM_DATA_ACCESSIBLE_PATHS:-}"
-    for p in "${_authorized[@]}"; do
-        p="${p%/}"
-        case "${p}" in
-            */"${STRATA_FPK_OTHER_SHARE:-//}") cand="${p}/models" ;;
-            */"${STRATA_FPK_OTHER_SHARE:-//}"/models) cand="${p}" ;;
-            *) continue ;;
-        esac
-        mkdir -p "${cand}" 2>/dev/null || true
-        if [ -d "${cand}" ] && [ -w "${cand}" ] && [ -x "${cand}" ]; then other_models="${cand}"; break; fi
-    done
-    if [ -n "${other_models}" ]; then
-        MODELS_DIR="${other_models}"
-        log "models: shared with ${STRATA_FPK_OTHER_APP}: ${MODELS_DIR}"
-    else
-        log "models: sharing was asked for, but the shared folder ${STRATA_FPK_OTHER_SHARE:-of the other Strata} is not among this app's authorized directories (or cannot be written): add it in the app's settings, then restart the app; using ${MODELS_DIR}"
-    fi
-fi
+case "${STRATA_FPK_MODELS:-own}" in
+    shared|other)
+        picked=""
+        IFS=':' read -r -a _authorized <<< "${TRIM_DATA_ACCESSIBLE_PATHS:-}"
+        for p in "${_authorized[@]}"; do
+            p="${p%/}"
+            [ -n "${p}" ] || continue
+            case "${p}" in
+                */"${STRATA_FPK_OTHER_SHARE:-//}") cand="${p}/models" ;;
+                */"${STRATA_FPK_OTHER_SHARE:-//}"/models) cand="${p}" ;;
+                *) cand="${p}/Strata" ;;
+            esac
+            mkdir -p "${cand}" 2>/dev/null || true
+            if [ -d "${cand}" ] && [ -w "${cand}" ] && [ -x "${cand}" ]; then picked="${cand}"; break; fi
+        done
+        if [ -n "${picked}" ]; then
+            MODELS_DIR="${picked}"
+            log "models: in an authorized folder (shared with the other Strata when it is authorized there too): ${MODELS_DIR}"
+        else
+            log "models: an authorized folder was asked for, but this app has none it can write (add one in the app's settings under authorized directories, then restart the app); using ${MODELS_DIR}"
+        fi ;;
+esac
 
 # ---- 宿主机的 NVIDIA 驱动库 --------------------------------------------------
 # 只把驱动自带的几个库做成符号链接放进一个单独目录，再把这个目录加进 LD_LIBRARY_PATH：
@@ -195,6 +199,7 @@ if [ ! -s "${HOME_DIR}/.auth.json" ]; then
 fi
 PROXY_PORT="${PORT}" PROXY_UPSTREAM_PORT="${BACKEND_PORT}" PROXY_AUTH_FILE="${HOME_DIR}/.auth.json" \
     PROXY_API_KEY_FILE="${HOME_DIR}/.api-key.json" \
+    PROXY_TLS="${STRATA_FPK_HTTPS:-off}" PROXY_TLS_DIR="${HOME_DIR}/tls" PROXY_TLS_USER_DIR="${SHARE}/tls" \
     "${NODE}" "${APPDEST}/bin/proxy.mjs" &
 CHILD_PIDS+=($!)
 log "web port ${PORT} -> Strata host 127.0.0.1:${BACKEND_PORT} (API key access: $([ -s "${HOME_DIR}/.api-key.json" ] && echo on || echo off))"

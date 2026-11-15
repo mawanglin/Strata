@@ -105,7 +105,7 @@
         "items": [
             {
                 "type": "tips",
-                "helpText": "模型动辄几十 GB。同一台 NAS 上同时装了 Strata 的 NVIDIA 版和 AMD gfx906 版时，可以让两个应用<b>共用一个模型目录</b>：在一边下载过的模型，另一边“下载”时只校验、不再重复下载（两边都能跑的是 Qwen3.8-Flash-Next 系列；Qwen3.6 和 DeepSeek 只有 NVIDIA 版能跑）。<br><b>飞牛只允许应用访问自己的和被授权的目录</b>，所以选“共用”后还要：到飞牛应用中心里本应用的<b>设置 → 授权目录</b>，添加共享文件夹「@OTHER_SHARE@」，再<b>重启本应用</b>。没授权时自动用本应用自己的目录，应用日志里会说明。已经下载在本应用共享文件夹里的模型照常可用，不会被移动。"
+                "helpText": "模型动辄几十 GB，可以放在共享文件夹「@SHARE@」里（默认），也可以放在<b>授权给本应用的文件夹</b>里：到飞牛应用中心里本应用的<b>设置 → 授权目录</b>添加一个文件夹（比如你自己的 Model），再<b>重启本应用</b>，模型会放进它下面的 <b>Strata</b> 子文件夹。同一台 NAS 上装了 Strata 的 NVIDIA 版和 AMD gfx906 版时，<b>两个应用授权同一个文件夹，就共用一个模型库</b>：一边下载过的模型，另一边只校验、不重复下载（两边都能跑的是 Qwen3.8-Flash-Next 系列；Qwen3.6 和 DeepSeek 只有 NVIDIA 版能跑）。没有可用的授权目录时自动用「@SHARE@」，应用日志里会说明。原来下载在「@SHARE@」里的模型照常可用，不会被移动。"
             },
             {
                 "type": "radio",
@@ -118,8 +118,8 @@
                         "value": "own"
                     },
                     {
-                        "label": "与「@OTHER_DISPLAY@」共用：使用共享文件夹「@OTHER_SHARE@」的 models（需要先在授权目录里添加它）",
-                        "value": "other"
+                        "label": "授权目录里的文件夹（其下的 Strata 子文件夹；两个 Strata 授权同一个就共用）",
+                        "value": "shared"
                     }
                 ]
             }
@@ -156,6 +156,31 @@
                     {
                         "pattern": "^([A-Za-z0-9_-]{16,128})?$",
                         "message": "至少 16 位，只能是字母、数字、- 和 _"
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "stepTitle": "HTTPS（可选）",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "开启后网页端口<b>同时支持 HTTPS</b>（同一个端口，地址改成 <b>https://NAS-IP:端口</b>），用户名密码和 API Key 不再明文传输。默认使用自动生成的<b>自签名证书</b>（覆盖 NAS 的主机名和各个 IP），浏览器第一次会提示“不安全”，确认继续即可；想用正式证书（比如飞牛里申请的域名证书），把证书和私钥导出成 <b>cert.pem</b> 和 <b>key.pem</b> 放进共享文件夹「@SHARE@」的 <b>tls</b> 目录，重启应用即可。开启后网页从 http 打开会自动跳到 https；/v1 接口仍然两种都收，已经配好的程序不受影响（自签名证书下程序要用 https 的话，需要信任这张证书）。"
+            },
+            {
+                "type": "radio",
+                "field": "wizard_https",
+                "label": "HTTPS",
+                "initValue": "off",
+                "options": [
+                    {
+                        "label": "关闭：只用 HTTP",
+                        "value": "off"
+                    },
+                    {
+                        "label": "开启：HTTP 和 HTTPS 同端口，网页自动跳到 HTTPS",
+                        "value": "on"
                     }
                 ]
             }

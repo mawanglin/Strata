@@ -4,20 +4,16 @@
         "items": [
             {
                 "type": "tips",
-                "helpText": "Strata 自身没有登录功能，网页端口不经过飞牛登录，所以<b>必须设置访问密码</b>：任何能访问该端口的人都可以使用这台 NAS 上的显卡和模型。打开方式：点飞牛桌面上的 Strata 图标，或直接访问 <b>http://NAS-IP:端口</b>，登录用下面的用户名和密码。注意这是明文 HTTP，请只在可信的局域网里使用。模型存放在共享文件夹「@SHARE@」的 models 里（卸载应用不会删除）。"
+                "helpText": "<b>设置里每一项默认都是“保持不变”或留空</b>，只改你动过的项。Strata 自身没有登录功能，网页端口不经过飞牛登录，所以<b>必须设置访问密码</b>：任何能访问该端口的人都可以使用这台 NAS 上的显卡和模型。打开方式：点飞牛桌面上的 Strata 图标，或直接访问 <b>http://NAS-IP:端口</b>，登录用下面的用户名和密码。注意这是明文 HTTP，请只在可信的局域网里使用。模型存放在共享文件夹「@SHARE@」的 models 里（卸载应用不会删除）。"
             },
             {
                 "type": "text",
                 "field": "wizard_port",
-                "label": "网页访问端口",
-                "initValue": "@PORT@",
+                "label": "网页访问端口（留空则不修改）",
+                "initValue": "",
                 "rules": [
                     {
-                        "required": true,
-                        "message": "请输入端口"
-                    },
-                    {
-                        "pattern": "^([1-9][0-9]{3,4})$",
+                        "pattern": "^([1-9][0-9]{3,4})?$",
                         "message": "端口须为 1000-65535 的数字"
                     }
                 ]
@@ -25,15 +21,11 @@
             {
                 "type": "text",
                 "field": "wizard_username",
-                "label": "登录用户名",
-                "initValue": "admin",
+                "label": "登录用户名（留空则不修改；改用户名时要同时输入新密码）",
+                "initValue": "",
                 "rules": [
                     {
-                        "required": true,
-                        "message": "请输入用户名"
-                    },
-                    {
-                        "pattern": "^[A-Za-z0-9_.-]{1,32}$",
+                        "pattern": "^([A-Za-z0-9_.-]{1,32})?$",
                         "message": "仅限字母、数字、_ . -"
                     }
                 ]
@@ -62,8 +54,12 @@
                 "type": "radio",
                 "field": "wizard_source",
                 "label": "下载源",
-                "initValue": "hf-mirror",
+                "initValue": "keep",
                 "options": [
+                    {
+                        "label": "保持不变",
+                        "value": "keep"
+                    },
                     {
                         "label": "Hugging Face 镜像站 hf-mirror.com（推荐，国内可直连）",
                         "value": "hf-mirror"
@@ -101,21 +97,25 @@
         "items": [
             {
                 "type": "tips",
-                "helpText": "模型动辄几十 GB。同一台 NAS 上同时装了 Strata 的 NVIDIA 版和 AMD gfx906 版时，可以让两个应用<b>共用一个模型目录</b>：在一边下载过的模型，另一边“下载”时只校验、不再重复下载（两边都能跑的是 Qwen3.8-Flash-Next 系列；Qwen3.6 和 DeepSeek 只有 NVIDIA 版能跑）。<br><b>飞牛只允许应用访问自己的和被授权的目录</b>，所以选“共用”后还要：到飞牛应用中心里本应用的<b>设置 → 授权目录</b>，添加共享文件夹「@OTHER_SHARE@」，再<b>重启本应用</b>。没授权时自动用本应用自己的目录，应用日志里会说明。已经下载在本应用共享文件夹里的模型照常可用，不会被移动。"
+                "helpText": "模型动辄几十 GB，可以放在共享文件夹「@SHARE@」里（默认），也可以放在<b>授权给本应用的文件夹</b>里：到飞牛应用中心里本应用的<b>设置 → 授权目录</b>添加一个文件夹（比如你自己的 Model），再<b>重启本应用</b>，模型会放进它下面的 <b>Strata</b> 子文件夹。同一台 NAS 上装了 Strata 的 NVIDIA 版和 AMD gfx906 版时，<b>两个应用授权同一个文件夹，就共用一个模型库</b>：一边下载过的模型，另一边只校验、不重复下载（两边都能跑的是 Qwen3.8-Flash-Next 系列；Qwen3.6 和 DeepSeek 只有 NVIDIA 版能跑）。没有可用的授权目录时自动用「@SHARE@」，应用日志里会说明。原来下载在「@SHARE@」里的模型照常可用，不会被移动。"
             },
             {
                 "type": "radio",
                 "field": "wizard_models",
                 "label": "模型存放位置",
-                "initValue": "own",
+                "initValue": "keep",
                 "options": [
+                    {
+                        "label": "保持不变",
+                        "value": "keep"
+                    },
                     {
                         "label": "本应用的共享文件夹「@SHARE@」",
                         "value": "own"
                     },
                     {
-                        "label": "与「@OTHER_DISPLAY@」共用：使用共享文件夹「@OTHER_SHARE@」的 models（需要先在授权目录里添加它）",
-                        "value": "other"
+                        "label": "授权目录里的文件夹（其下的 Strata 子文件夹；两个 Strata 授权同一个就共用）",
+                        "value": "shared"
                     }
                 ]
             }
@@ -132,8 +132,12 @@
                 "type": "radio",
                 "field": "wizard_api",
                 "label": "API Key 访问",
-                "initValue": "false",
+                "initValue": "keep",
                 "options": [
+                    {
+                        "label": "保持不变",
+                        "value": "keep"
+                    },
                     {
                         "label": "关闭：只有登录网页的人能用",
                         "value": "false"
@@ -147,11 +151,40 @@
             {
                 "type": "password",
                 "field": "wizard_api_key",
-                "label": "API Key（开启时必填；已设置过的留空则不修改；至少 16 位，字母、数字、- 和 _）",
+                "label": "新的 API Key（留空则不修改；至少 16 位，字母、数字、- 和 _）",
                 "rules": [
                     {
                         "pattern": "^([A-Za-z0-9_-]{16,128})?$",
                         "message": "至少 16 位，只能是字母、数字、- 和 _"
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "stepTitle": "HTTPS（可选）",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "开启后网页端口<b>同时支持 HTTPS</b>（同一个端口，地址改成 <b>https://NAS-IP:端口</b>），用户名密码和 API Key 不再明文传输。默认使用自动生成的<b>自签名证书</b>（覆盖 NAS 的主机名和各个 IP），浏览器第一次会提示“不安全”，确认继续即可；想用正式证书（比如飞牛里申请的域名证书），把证书和私钥导出成 <b>cert.pem</b> 和 <b>key.pem</b> 放进共享文件夹「@SHARE@」的 <b>tls</b> 目录，重启应用即可。开启后网页从 http 打开会自动跳到 https；/v1 接口仍然两种都收，已经配好的程序不受影响（自签名证书下程序要用 https 的话，需要信任这张证书）。"
+            },
+            {
+                "type": "radio",
+                "field": "wizard_https",
+                "label": "HTTPS",
+                "initValue": "keep",
+                "options": [
+                    {
+                        "label": "保持不变",
+                        "value": "keep"
+                    },
+                    {
+                        "label": "关闭：只用 HTTP",
+                        "value": "off"
+                    },
+                    {
+                        "label": "开启：HTTP 和 HTTPS 同端口，网页自动跳到 HTTPS",
+                        "value": "on"
                     }
                 ]
             }

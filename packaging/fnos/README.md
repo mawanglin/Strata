@@ -73,16 +73,40 @@ Strata 首次使用要下载几十 GB 的模型。向导里可选：
 
 之后可以在飞牛应用设置里改，保存后应用自动重启。
 
-## 两个应用共用模型目录
+## 模型目录：授权目录，两个应用共用
 
-同时装了 NVIDIA 版和 gfx906 版时，可以让一个用另一个的 `models` 目录，下载过的模型不用再下（两边都能跑的是 Qwen3.8-Flash-Next 系列）：
+模型可以放在本应用的共享文件夹（默认），也可以放在**授权给本应用的文件夹**里：
 
-1. 在应用设置的“模型目录”里选“与另一个 Strata 共用”。
-2. **在飞牛应用中心里本应用的“设置 → 授权目录”里添加对方的共享文件夹**（NVIDIA 版加 `Strata-gfx906`，gfx906 版加 `Strata`），再重启本应用。
+1. 在飞牛应用中心里本应用的“设置 → 授权目录”添加一个文件夹（比如自己的 `Model`），设置里“模型目录”选“授权目录里的文件夹”，重启应用。
+2. 模型放进它下面的 **`Strata` 子文件夹**（`/vol1/1000/Model/Strata`），不和你放在 `Model` 里的别的东西混在一起。
+3. **NVIDIA 版和 gfx906 版授权同一个文件夹，就共用一个模型库**：一边下载过的模型，另一边“下载”时只校验、不重复下载（两边都能跑的是 Qwen3.8-Flash-Next 系列）。
 
-为什么要第 2 步：飞牛的共享文件夹由它自己的 **Trim-ACL**（`/usr/trim/bin/trimacl`）管，每个共享文件夹只允许它所属的应用用户和用户组 1000 访问；应用（包括 `cmd/` 生命周期脚本）都以应用用户运行，改不了别的应用的目录（试过 POSIX ACL：写得进去但不起作用，已撤销）。“授权目录”是飞牛给应用开放别的目录的正式办法。没授权时应用自动用自己的目录，日志里有一行 `models: sharing was asked for, but ...` 说明原因。
+为什么要授权：飞牛的共享文件夹由它自己的 **Trim-ACL**（`/usr/trim/bin/trimacl`）管，每个应用只能访问自己的共享文件夹和被授权的文件夹；应用（包括 `cmd/` 生命周期脚本）以应用用户运行，改不了别的目录的权限（试过 POSIX ACL：写得进去但不起作用，已撤销）。“授权目录”就是飞牛给文件夹加上应用用户的 Trim-ACL（实测 `Model` 上多了 uid 899、900 两条允许规则，继承到子目录和文件）。
 
-**没有在真机上实测授权后的效果**（授权目录只能在飞牛网页里加）；`tests/test_models_dir.sh` 检查了目录选择的逻辑。
+实测（2026-11-15）：两个应用都授权 `/vol1/1000/Model`，日志显示 `models: in an authorized folder ...: /vol1/1000/Model/Strata`；CUDA 版“安装”只在 gfx906 版下载过的 Coder IQ1_M：**36 秒，没有下载**，在 RTX 3060 上 128K 上下文加载、推理正确（约 32 tok/s）。已经装过的模型不会搬家（gfx906 版的 Coder 仍用它原来那份），只有新装的进共享库。
+
+**往授权文件夹里手动放 / 复制模型时注意**：飞牛按 Trim-ACL 判断权限，用 `cp` 以 root 复制进去的文件不会继承授权，两个应用都读不了。复制后要补上规则（以 root）：
+`find /vol1/1000/Model/Strata -mindepth 1 -exec /usr/trim/bin/trimacl -m a:u:<应用uid>:rwxpdDaAeEc:sfd {} \;`（两个应用的 uid 各一次，`id -u strata`、`id -u strata-gfx906`）。在 ZFS 上 `cp` 是块克隆，几十 GB 瞬间复制完，不多占空间。
+
+## 终端命令
+
+包里带着 Strata 的命令行，用和应用完全相同的环境运行（SSH 到飞牛后）：
+
+```bash
+sudo /var/apps/strata/target/bin/strata status        # gfx906 版把 strata 换成 strata-gfx906
+sudo /var/apps/strata/target/bin/strata monitor       # 实时看速度、显存、请求（q 退出；--once 只看一次）
+sudo /var/apps/strata/target/bin/strata --help
+```
+
+`status` / `monitor` 没给 `--url` 时自动接上网页里正在运行的模型（宿主分配的端口和密钥，密钥经环境变量传，不出现在进程参数里）；没加载模型时会提示。实测能看到模型、显卡占用、请求记录。`strata runtime …` 管的是命令行自己起的服务，和应用里的实例格式不同（`runtime status` 会报 “unsupported shape”），不要用它管应用里的模型。
+
+## HTTPS
+
+设置里“HTTPS”开启后，**同一个端口同时收 HTTP 和 HTTPS**（看连接的第一个字节是不是 TLS 握手），地址改成 `https://NAS-IP:端口`：
+
+- 证书：默认自动生成**自签名证书**（ECDSA P-256，10 年，`bin/tls-cert.mjs` 只用 Node 自带的 crypto 生成，不用系统的 openssl），覆盖 NAS 的主机名、`localhost` 和所有 IP；本机的名字或 IP 变了会重新生成。想用正式证书（比如飞牛里申请的域名证书），导出成 `cert.pem` + `key.pem` 放进共享文件夹的 `tls/` 目录，重启应用即可（私钥和证书对不上时不用它，日志说明，只开 HTTP）。
+- 网页从 http 打开会 308 跳到 https；**`/v1` 接口两种都收**，已经配好 `http://` 的程序不受影响。自签名证书下程序要走 https，得信任这张证书（`/var/apps/<应用>/var/home/tls/cert.pem`）。
+- 实测：证书被 openssl 和 Node 正确解析，SAN 含全部 IP；把它当 CA 时按 IP 严格校验通过；页面和资源经 HTTPS 正常；HTTP 网页 308 跳转；HTTP / HTTPS 的 `/v1` 都是 200；WebSocket 和流式响应经 HTTPS 正常。默认关闭。
 
 ## 数据在哪里
 
@@ -110,12 +134,13 @@ Strata 首次使用要下载几十 GB 的模型。向导里可选：
 - **小显存卡的上下文：自动降档**（`patches/0003-q36-context-fallback.patch`，`STRATA_FPK_CONTEXT_FALLBACK=1`）。Qwen3.6 引擎把整个上下文（fp32 的 K/V）放在显存里，没有放到内存的选项（大内存用来放专家：64K 时 256 个专家全在内存里），所以上游“所有卡默认 128K”在 12 GB 卡上起不来。补丁让它在引擎日志说显存不够时把上下文减半重试（最低 16K），成功的值写回模型配置，下次直接从这里起；用户在模型设置里自己选过的上下文不改；只是“同时 2 个请求”放不下（单个放得下）时交给上游的“一次一个请求”处理，不降上下文。
   RTX 3060 12 GB 实测：128K ❌，96K ❌（放完上下文只剩 216 MiB，专家缓冲区要 1256 MiB），**64K ✅（约 29.7 tok/s）**，32K ✅（约 36 tok/s）。连续三次加载：第 1 次 128K → 自动 64K 并记住，第 2、3 次直接 64K。
 - **卸载必须在飞牛网页里做**（`appcenter-cli uninstall` 会拒绝）；`appcenter-cli install-fpk` 对已安装的同名应用会直接跳过，**升级也要在网页里做**。所以“升级路径”和“卸载向导”**没有实测**。
+- **设置向导显示的不是当前值**：飞牛的设置页只显示向导里写的默认值。所以设置里每一项默认都是“保持不变”或留空，只改动过的项（`tests/test_settings.sh`）。之前没有这一条时，在设置里加授权目录顺手保存，就把已开启的 API Key 删掉了。
 - **安装失败 `10234 … acl_get_file failed`**：飞牛安装时以 root 遍历应用目录，悬空 / 绝对 / 指到应用目录外的符号链接会让它失败。`build.sh` 在打包前检查这三类链接，有就直接报错。
 - 第一次 `appcenter-cli start` 返回过一次 `Failed to launch app. error code 10500`，但应用中心日志里这次启动是 `success`，应用也确实起来了，之后的 start / stop 都正常；原因没查清。
 - **不在线更新程序**：引擎、Control、DeepSeek 引擎都随 fpk 走（`launch.sh` 设 `STRATA_FPK_NO_UPDATES=1`，`patches/0002-no-online-updates.patch`）。设置里没有“更新引擎 / 更新 Strata”，“检查更新”返回“请安装更新的 fpk”，更新操作会被拒绝。**模型、读图文件、DFlash2 草稿模型照常下载**（它们是数据，不是程序）。从本地文件安装引擎（离线、手动）仍然可以。实测：关掉后装模型、加载、推理都正常。
 - 宿主第一次启动会把 `engine-bundle` 里的引擎复制到应用数据的 `components/`，之后会删掉安装目录里的那份（日志有说明），所以占用的是应用数据里的 1.2 GB。
 - **图片要在模型准备时开启**：模型当初没开图片就装了的话，之后加载时开图片不会自动补文件（服务端会报 “started without the vision encoder”）。在界面里带图片重新准备一次这个模型即可，只补下读图文件（约 1 GB），不会重下模型本体。
-- **DeepSeek V4.1 的模型没有实测**（最小的也要 190 GB 以上）；引擎已在飞牛上验证（见下）。它会把放不进内存的部分从硬盘读，模型放在机械硬盘上会很慢。
+- **DeepSeek V4.1 的模型没有实测**（最小的也要 190 GB 以上）；引擎已在飞牛上验证（见下）。它会把放不进内存的部分从硬盘读：这台 NAS 的存储池是 8 块 12 TB 机械硬盘的 RAIDZ3（2 块 1 TB NVMe 做 L2ARC 读缓存，已用 85%），上游的速度数字是在 NVMe SSD 上测的，放在这个池里多半慢很多。
 - 防火墙服务文件（`.sc`）里写的是默认端口 47831；向导里改了端口又开着防火墙的话，要自己放行。
 - **没有实测**：向导在飞牛网页里的渲染、飞牛桌面图标（`"port": "${wizard_port}"` 的写法照搬了 1Panel / MoonTVPlus）、DeepSeek V4.1 的模型推理、Codex / OpenCode 等其他客户端（协议和 curl 测过的一样）。
 - 直连端口是明文 HTTP，只在可信局域网里用。
@@ -178,9 +203,10 @@ VARIANT=gfx906 ENGINE_COMPONENT=/path/to/work/out/components/engine/0.1.59-linux
 `build.sh` 需要 Node 24.12+、python3、curl、`fnpack`（`~/.local/bin/fnpack` 或 `FNPACK=`）、网络，每个变体的工作目录约 3 GB（`packaging/fnos/build/<变体>/`，下载缓存共用 `packaging/fnos/build/cache/`）。版本号形如 `0.2.13-cob.1`（上游 `0.2.13` + 本地小版本，符合 fork 规则）。换上游版本时同时改 `UPSTREAM_TAG`、`CONTROL_ASSET`、`ENGINE_ASSET`；校验值从该 release 的 `SHA256SUMS.txt` 自动取。
 
 ```bash
-packaging/fnos/tests/test_proxy.sh             # 认证代理（用户名密码、/v1 的 API Key、转发、流式、WebSocket），25 项
+packaging/fnos/tests/test_proxy.sh             # 认证代理（用户名密码、/v1 的 API Key、转发、流式、WebSocket、HTTPS），36 项
+packaging/fnos/tests/test_settings.sh          # 安装 / 设置向导的处理（“保持不变”），11 项
 packaging/fnos/tests/test_context_fallback.sh  # Qwen3.6 上下文自动降档的判断，11 项
-packaging/fnos/tests/test_models_dir.sh        # 共用模型目录的选择，5 项
+packaging/fnos/tests/test_models_dir.sh        # 模型目录的选择（授权目录），8 项
 # 都不需要 GPU / 飞牛
 ```
 
@@ -196,7 +222,9 @@ fnos/                     fpk 骨架（@APPNAME@ 等占位符由 build.sh 替换
 ├── wizard/               安装 / 设置 / 卸载向导
 └── app/                  → /var/apps/strata/target
     ├── bin/launch.sh     环境（按 bin/variant.env 区分变体）、宿主机 NVIDIA 驱动库链接、宿主崩溃自动重启
-    ├── bin/proxy.mjs     认证反向代理（HTTP / SSE / WebSocket）
+    ├── bin/proxy.mjs     认证反向代理（HTTP / SSE / WebSocket；HTTPS 同端口）
+    ├── bin/tls-cert.mjs  自签名证书（纯 Node）
+    ├── bin/strata        终端命令入口（sudo 运行，切到应用用户和应用的环境）
     ├── bin/set-password.mjs   网页密码（scrypt）
     ├── bin/set-api-key.mjs    API Key（SHA-256）
     └── ui/               飞牛桌面入口（直接打开网页端口）

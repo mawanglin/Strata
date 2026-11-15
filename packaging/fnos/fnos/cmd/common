@@ -69,30 +69,47 @@ fix_owner() {
 
 # 校验向导的值并保存；输入了密码就存起来（bin/set-password.mjs）。
 # 网页端口没有飞牛登录保护，所以访问密码是必须的。
+# 设置向导（wizard/config）显示的不是当前值：每项都有“保持不变”（keep，或留空），这时沿用 settings.env 里的当前值，
+# 免得在设置里改一项（比如加授权目录）就把别的设置悄悄重置成默认值（曾经把 API Key 删掉过）。
 apply_wizard_settings() {
-    local port="${wizard_port:-47831}"
-    local user="${wizard_username:-admin}"
-    local source="${wizard_source:-hf-mirror}"
-    local custom="${wizard_endpoint:-}"
-    local endpoint="" ms=""
-    local api="${wizard_api:-false}"
-    local models="${wizard_models:-own}"
+    # 当前的设置（第一次安装时没有）
+    local cur_port=47831 cur_user=admin cur_endpoint="https://hf-mirror.com" cur_ms="" cur_models=own cur_https=off
+    if [ -r "${SETTINGS_FILE}" ]; then
+        # shellcheck source=/dev/null
+        . "${SETTINGS_FILE}"
+        cur_port="${STRATA_FPK_PORT:-${cur_port}}"; cur_user="${STRATA_FPK_USER:-${cur_user}}"
+        cur_endpoint="${STRATA_FPK_HF_ENDPOINT-${cur_endpoint}}"; cur_ms="${STRATA_FPK_SOURCE:-}"
+        cur_models="${STRATA_FPK_MODELS:-${cur_models}}"; cur_https="${STRATA_FPK_HTTPS:-${cur_https}}"
+    fi
+    keep() { [ -z "$1" ] || [ "$1" = "keep" ]; }
+
+    local port="${wizard_port:-}" user="${wizard_username:-}" source="${wizard_source:-}" custom="${wizard_endpoint:-}"
+    local api="${wizard_api:-}" models="${wizard_models:-}" https="${wizard_https:-}"
+    local endpoint="${cur_endpoint}" ms="${cur_ms}"
+    keep "${port}" && port="${cur_port}"
+    keep "${user}" && user="${cur_user}"
+    keep "${models}" && models="${cur_models}"
+    keep "${https}" && https="${cur_https}"
 
     [[ "${port}" =~ ^[0-9]+$ ]] && [ "${port}" -ge 1024 ] && [ "${port}" -le 65535 ] \
         || fail "端口无效：${port}"
     [[ "${user}" =~ ^[A-Za-z0-9_.-]{1,32}$ ]] || fail "用户名无效：${user}"
-    case "${source}" in
-        hf-mirror)   endpoint="https://hf-mirror.com" ;;
-        huggingface) endpoint="" ;;
-        modelscope)  ms="modelscope" ;;
-        custom)
-            [[ "${custom}" =~ ^https?://[A-Za-z0-9._:/-]+$ ]] \
-                || fail "自定义镜像地址无效（必须以 http:// 或 https:// 开头，只能含字母数字和 . _ : / -）：${custom}"
-            endpoint="${custom%/}" ;;
-        *) fail "模型下载源无效：${source}" ;;
-    esac
-    [[ "${api}" =~ ^(true|false)$ ]] || fail "API 访问设置无效：${api}"
-    [[ "${models}" =~ ^(own|other)$ ]] || fail "模型目录设置无效：${models}"
+    if ! keep "${source}"; then
+        endpoint=""; ms=""
+        case "${source}" in
+            hf-mirror)   endpoint="https://hf-mirror.com" ;;
+            huggingface) endpoint="" ;;
+            modelscope)  ms="modelscope" ;;
+            custom)
+                [[ "${custom}" =~ ^https?://[A-Za-z0-9._:/-]+$ ]] \
+                    || fail "自定义镜像地址无效（必须以 http:// 或 https:// 开头，只能含字母数字和 . _ : / -）：${custom}"
+                endpoint="${custom%/}" ;;
+            *) fail "模型下载源无效：${source}" ;;
+        esac
+    fi
+    [[ "${api}" =~ ^(true|false|keep)?$ ]] || fail "API 访问设置无效：${api}"
+    [[ "${models}" =~ ^(own|shared|other)$ ]] || fail "模型目录设置无效：${models}"
+    [[ "${https}" =~ ^(on|off)$ ]] || fail "HTTPS 设置无效：${https}"
 
     mkdir -p "${TRIM_PKGVAR}/home"
     fix_owner "${TRIM_PKGVAR}"
@@ -108,7 +125,10 @@ apply_wizard_settings() {
         fail "修改用户名时需要同时输入新密码"
     fi
 
-    # API Key（只用于 /v1 接口；网页仍用用户名密码）。关闭时删掉；开启时没输入新 Key 就沿用已保存的。
+    # API Key（只用于 /v1 接口；网页仍用用户名密码）。保持不变：什么也不动；关闭：删掉；开启：输入了新 Key 就换，没输入就沿用已保存的。
+    case "${api}" in
+        ""|keep) [ -n "${wizard_api_key:-}" ] && api=true ;;   # 选“保持不变”但填了新 Key：当作开启并换 Key
+    esac
     if [ "${api}" = "true" ]; then
         if [ -n "${wizard_api_key:-}" ]; then
             printf '%s\n' "${wizard_api_key}" \
@@ -118,8 +138,9 @@ apply_wizard_settings() {
         elif [ ! -s "${API_KEY_FILE}" ]; then
             fail "开启 API 访问时需要设置 API Key"
         fi
-    else
+    elif [ "${api}" = "false" ]; then
         rm -f "${API_KEY_FILE}"
+        log_msg "API key access turned off"
     fi
 
     {
@@ -128,6 +149,7 @@ apply_wizard_settings() {
         echo "STRATA_FPK_HF_ENDPOINT='${endpoint}'"
         echo "STRATA_FPK_SOURCE='${ms}'"
         echo "STRATA_FPK_MODELS=${models}"
+        echo "STRATA_FPK_HTTPS=${https}"
     } > "${SETTINGS_FILE}"
     fix_owner "${TRIM_PKGVAR}"
 }

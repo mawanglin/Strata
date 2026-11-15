@@ -1,0 +1,52 @@
+#!/bin/bash
+# Strata 的终端命令（strata status / monitor / connect / logs / bench …），用和应用完全相同的环境运行：
+# 应用用户、模型目录、引擎、下载源都一样，和网页里看到的是同一个 Strata。
+#
+# 用法（SSH 到飞牛后）：
+#   sudo /var/apps/strata/target/bin/strata status           # gfx906 版把 strata 换成 strata-gfx906
+#   sudo /var/apps/strata/target/bin/strata monitor          # 实时看速度、显存、请求（Ctrl+C 退出）
+#   sudo /var/apps/strata/target/bin/strata --help
+# 需要 sudo：命令要以应用用户的身份跑，普通用户读不到应用的数据。
+set -eu
+SELF="$(readlink -f "$0")"
+# shellcheck source=/dev/null
+. "$(dirname "${SELF}")/variant.env"
+APP="${STRATA_FPK_APPNAME:?variant.env has no STRATA_FPK_APPNAME}"
+APPDEST="/var/apps/${APP}/target"
+PKGVAR="/var/apps/${APP}/var"
+[ -d "${APPDEST}" ] && [ -d "${PKGVAR}" ] || { echo "${APP} is not installed here (${APPDEST})" >&2; exit 1; }
+
+if [ "$(id -u)" = "0" ]; then
+    uid="$(id -u "${APP}" 2>/dev/null)" || { echo "no user ${APP}" >&2; exit 1; }
+    exec setpriv --reuid="${uid}" --regid="$(id -g "${APP}")" --init-groups -- "${SELF}" "$@"
+fi
+[ "$(id -un)" = "${APP}" ] || { echo "run it with sudo: sudo ${SELF} $*" >&2; exit 1; }
+
+# 飞牛启动应用时才传的两项：共享文件夹、授权目录（从应用日志里取上一次启动时的值），模型目录要用到它们。
+share=""
+for d in /vol*/@appshare/"${STRATA_FPK_SHARE:-}"; do [ -d "${d}" ] && { share="${d}"; break; }; done
+authorized="$(sed -n 's/.*authorized directories (TRIM_DATA_ACCESSIBLE_PATHS): //p' "${PKGVAR}/strata.log" 2>/dev/null | tail -1)"
+[ "${authorized}" = "<none>" ] && authorized=""
+
+export TRIM_APPDEST="${APPDEST}" TRIM_PKGVAR="${PKGVAR}" TRIM_DATA_SHARE_PATHS="${share}" TRIM_DATA_ACCESSIBLE_PATHS="${authorized}"
+
+# status / monitor 没指定 --url / --connection 时，接上网页里正在运行的那个模型实例（宿主分配的端口，不是 strata launch 的默认端口）。
+# 端口和密钥取自宿主的实例记录；密钥经环境变量交给命令行，不出现在进程参数里。
+case "${1:-}" in
+    status|monitor)
+        if ! printf '%s\n' "$@" | grep -qE '^--(url|connection)(=|$)'; then
+            inst="$(ls -t "${PKGVAR}"/home/strata/data/native-instances/*.json 2>/dev/null | head -1 || true)"
+            if [ -n "${inst}" ]; then
+                read -r port key < <("${APPDEST}/node/bin/node" -e 'const d=require(process.argv[1]);console.log(d.port||"",d.api_key||"")' "${inst}")
+                if [ -n "${port}" ]; then
+                    export STRATA_FPK_INSTANCE_KEY="${key}"
+                    cmd="$1"; shift
+                    set -- "${cmd}" --url "http://127.0.0.1:${port}" --credential-env STRATA_FPK_INSTANCE_KEY "$@"
+                fi
+            else
+                echo "(no model is loaded in ${APP} right now: load one in the web page, or give --url)" >&2
+            fi
+        fi ;;
+esac
+cd "${PKGVAR}/home"
+exec bash "${APPDEST}/bin/launch.sh" exec "${APPDEST}/control/bin/strata" "$@" 2> >(grep -v '^20..-..-.. ..:..:.. \[launch\]' >&2)
