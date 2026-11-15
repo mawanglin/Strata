@@ -155,8 +155,23 @@ sudo /var/apps/strata/target/bin/strata --help
   3060 的生成速度和 MI50 差不多（都在 35–45 tok/s），读长提示词快一倍左右。
 - **DeepSeek V4.1 能跑，但在机械硬盘池上很慢**。2026-11-15 实测：ISTA-DAS-Coder（190.7 GB，最小的一套），hf-mirror.com 下载加两轮校验 44 分钟，放在共享模型库（8 块 12 TB 机械硬盘的 RAIDZ3，2 块 1 TB NVMe 做 L2ARC 读缓存）；RTX 3060 上 60 秒加载完；写 `is_prime` 两次都正确，第一次 121 秒 / 245 token（约 **2.3 tok/s**），第二次 66 秒 / 204 token（约 **3.2 tok/s**）。上游在 RTX 3060 + NVMe SSD 上是 9–11 tok/s：差在专家要从机械硬盘读。加载期间 NAS 内存用到 97 / 125 GB（可用只剩 27 GB），会挤到别的服务；想认真用 DeepSeek，把模型放到单独的 NVMe 上，用完记得卸载。
 - 防火墙服务文件（`.sc`）里写的是默认端口 47831；向导里改了端口又开着防火墙的话，要自己放行。
-- **没有实测**：向导在飞牛网页里的渲染、飞牛桌面图标（`"port": "${wizard_port}"` 的写法照搬了 1Panel / MoonTVPlus）、DeepSeek V4.1 的模型推理、Codex / OpenCode 等其他客户端（协议和 curl 测过的一样）。
+- **没有实测**：向导在飞牛网页里的渲染、飞牛桌面图标（`"port": "${wizard_port}"` 的写法照搬了 1Panel / MoonTVPlus）、Cloudflare 隧道（见下面“补测”）。
 - 直连端口是明文 HTTP，只在可信局域网里用。
+
+## 补测：客户端和其他功能（2026-11-16，同一台 NAS）
+
+| 功能 | 结果 |
+|---|---|
+| **Codex 0.167.0** | ✅ 配置 `wire_api = "responses"`、`base_url = "http://<NAS>:47832/v1"`、模型 `coder-iq1_m`（gfx906 版）。任务“建 `sum.py` 打印 17+25 并运行”：40 秒，文件建好，运行输出 42。Codex 提示找不到这个模型的元数据（只是提示，不影响）。 |
+| **OpenCode 1.19.5** | ✅ 用 `@ai-sdk/openai-compatible` 接 `/v1`。同样的任务 63 秒完成，输出 42；“Say hi.” 50 秒。第一次运行 600 秒没有任何输出就超时了，很可能是 OpenCode 第一次下载 SDK（没确认）。 |
+| **Claude Code 2.1** | ✅ 见上面“实测结果”。 |
+| **两个应用同时加载模型** | ❌→已修：两边同时点“加载”时，两个宿主都从 18500 开始找空闲的引擎端口、探到同一个，后起的引擎报 `OSError: [Errno 98] Address already in use`。`patches/0004-engine-port-base.patch` 让两个应用各用一段（CUDA 18500 起，gfx906 18600 起，`launch.sh` 设 `STRATA_FPK_ENGINE_PORT_BASE`）。修好后（cob.12 / cob.11）两边同一时刻点加载：CUDA 的 IQ3_XXS 61 秒、gfx906 的 Coder IQ1_M 109 秒都加载成功，端口 18500 / 18600；同时提问都答对（3.8 秒 / 2.9 秒）。两个都加载着时 NAS 内存可用只剩 6–14 GB（共 125 GB），**两个大模型同时加载要先看内存**，用完卸载。 |
+| **局域网共享**（网页“API 服务 → 局域网共享”） | ✅ CUDA 版：打开后监听宿主端口 + 1（这次是 18792），局域网不带 Key 401、带 Key 200，网页路径 404；关闭后端口关掉。gfx906 版的共享端口跟着它自己的宿主端口走。它绕过本包的认证代理，只认 Strata 的 API Key。 |
+| **自动调优**（网页里用户自己跑） | Coder IQ1_M：调完了，但没有生成可用的预设；它的基准：生成 27.9 tok/s、读入 37 tok/s（24 token 输入 / 200 输出，贪心，不思考）。DeepSeek 2.00bpw：两次都失败，“The operation was aborted due to timeout”（机械硬盘池太慢，见上面 DeepSeek 一条）。 |
+| **DFlash2 草稿模型**（Qwen3.8-Flash-Next） | ❌→已修：选 DFlash2 加载时退回 MTP，说明是 “There is no internet connection, so the DFlash2 drafter can't be downloaded now.”。原因：12 GB 的 3060 用不上调优版（上游只给“专家全在显存里”的卡），走的是原版 drafter，而它的下载地址写死了 `huggingface.co`，不认 `HF_ENDPOINT`；NAS 连不上 huggingface.co（5 秒无响应），hf-mirror.com 可以。`patches/control/0002-dflash2-hf-endpoint.patch` 让它按 `HF_ENDPOINT`（向导里的模型下载源）下载。修好后（cob.12）：从 hf-mirror.com 下载 1.2 GB 约 24 秒，打包 12 秒，连同加载共 121 秒。**RTX 3060 上 DFlash2 比 MTP 快**（上游把这张卡标为 “slower”，实测相反）：写 `is_prime` 4.2–6.4 秒（MTP 8.1 秒），引擎解码 58–67 tok/s；鸡兔同笼 3.6 秒（MTP 4.5 秒）；长文 1865 token 40 秒，平均约 46 tok/s（MTP 约 40 tok/s）。代价是只能一次一个请求（MTP 可以同时 2 个）。 |
+| **编程助手的工具、MCP、联网搜索** | ⚪ 用不了：网页提示 “The coding assistant isn't installed…”。这个组件（harness）不在上游的更新源里（只有 app、control、drafters、dsv41、engine），上游文档说它的仓库还没发布。不是本包的问题。 |
+| **Cloudflare 隧道** | ⚪ 故意没测：它会把服务公开到互联网，还要在运行时下载 `cloudflared`。要用的话自己在网页里开，并且一定要设 API Key。 |
+| MI60 / Radeon VII、飞牛网页里的升级和卸载 | ⚪ 没有硬件 / 只能在网页里点，没测。 |
 
 ## gfx906 变体（AMD MI50 / MI60 / Radeon VII）
 
@@ -180,6 +195,8 @@ sudo /var/apps/strata/target/bin/strata --help
 | `patches/0001-gpu-vendor.patch` | 宿主 | 只保留本变体厂商的卡（两个变体共用） |
 | `patches/0002-no-online-updates.patch` | 宿主 | 关掉引擎 / Control 的在线更新（两个变体共用） |
 | `patches/0003-q36-context-fallback.patch` | 宿主 | Qwen3.6 显存不够时自动降上下文并记住（两个变体共用；gfx906 不跑 Qwen3.6，不会触发） |
+| `patches/0004-engine-port-base.patch` | 宿主 | 引擎端口从 `STRATA_FPK_ENGINE_PORT_BASE` 起找（CUDA 18500，gfx906 18600），两个应用同时加载不再抢同一个端口（两个变体共用） |
+| `patches/control/0002-dflash2-hf-endpoint.patch` | Control | DFlash2 草稿模型按 `HF_ENDPOINT` 下载（默认 hf-mirror.com），不再写死 huggingface.co（两个变体共用） |
 
 `launch.sh` 按 `bin/variant.env`（构建时写入）设置：gfx906 版 `STRATA_FPK_GPU_VENDOR=amd`、`STRATA_ENGINE_BACKEND=hip`、`STRATA_EXPERIMENTAL_GFX906=1`，不链接任何宿主机的库。
 
@@ -230,6 +247,7 @@ packaging/fnos/tests/test_proxy.sh             # 认证代理（用户名密码�
 packaging/fnos/tests/test_settings.sh          # 安装 / 设置向导的处理（“保持不变”），8 项
 packaging/fnos/tests/test_context_fallback.sh  # Qwen3.6 上下文自动降档的判断，11 项
 packaging/fnos/tests/test_models_dir.sh        # 模型目录的选择（授权目录），8 项
+packaging/fnos/tests/test_port_and_drafter.sh  # 两个应用的引擎端口段、DFlash2 按 HF_ENDPOINT 下载，7 项
 # 都不需要 GPU / 飞牛
 ```
 
@@ -239,7 +257,7 @@ packaging/fnos/tests/test_models_dir.sh        # 模型目录的选择（授权�
 build.sh                  构建脚本（VARIANT=cuda|gfx906）
 tools/make_icon.py        两个变体的应用图标（厂商色 + 厂商名）
 gfx906/                   gfx906 引擎的构建：build-engine-docker.sh（宿主侧）、build-engine.sh（容器里）、patches/（引擎源码补丁）
-patches/                  宿主补丁（0001-gpu-vendor、0002-no-online-updates、0003-q36-context-fallback）；patches/control/ 是 Control 的补丁
+patches/                  宿主补丁（0001-gpu-vendor、0002-no-online-updates、0003-q36-context-fallback、0004-engine-port-base）；patches/control/ 是 Control 的补丁（0001-gfx906-opt-in-and-backend、0002-dflash2-hf-endpoint）
 fnos/                     fpk 骨架（@APPNAME@ 等占位符由 build.sh 替换）
 ├── manifest, config/     应用清单；privilege（应用用户 strata + video/render 组）、resource（共享文件夹、防火墙）
 ├── cmd/                  生命周期脚本（start/stop/status、安装/配置/升级/卸载回调）

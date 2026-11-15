@@ -127,6 +127,9 @@ export STRATA_FPK_NO_UPDATES=1
 # Qwen3.6 的上下文（fp32 K/V）整个在显存里：小显存卡默认的 128K 起不来时自动减半重试，成功的值记进模型配置
 # （packaging/fnos/patches/0003-q36-context-fallback.patch）。在模型设置里自己选过的上下文不会被改。
 export STRATA_FPK_CONTEXT_FALLBACK=1
+# 两个 Strata（CUDA 和 gfx906）在同一台 NAS 上：同时加载模型时两边都探到同一个空闲的引擎端口，后起的那个 EADDRINUSE 失败。
+# 各用各的端口段（packaging/fnos/patches/0004-engine-port-base.patch）：CUDA 18500 起，gfx906 18600 起。
+if [ "${STRATA_FPK_VARIANT}" = gfx906 ]; then export STRATA_FPK_ENGINE_PORT_BASE=18600; else export STRATA_FPK_ENGINE_PORT_BASE=18500; fi
 # gfx906（MI50 / MI60 / Radeon VII）不在上游 Control 的 AMD 支持名单里：本包的 Control 补丁加了这个开关
 # （packaging/fnos/patches/control/0001-gfx906-opt-in-and-backend.patch）。
 [ "${STRATA_FPK_VARIANT}" = gfx906 ] && export STRATA_EXPERIMENTAL_GFX906=1
