@@ -1,0 +1,27 @@
+[
+    {
+        "stepTitle": "卸载 Strata",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "模型在共享文件夹「@SHARE@」里，<b>卸载不会删除它们</b>。应用数据目录里保存的是聊天记录、设置、引擎拷贝和访问密码。"
+            },
+            {
+                "type": "radio",
+                "field": "wizard_delete_data",
+                "label": "是否删除应用数据？",
+                "initValue": "false",
+                "options": [
+                    {
+                        "label": "保留，以便重新安装后继续使用",
+                        "value": "false"
+                    },
+                    {
+                        "label": "删除（不可恢复，聊天记录会丢失）",
+                        "value": "true"
+                    }
+                ]
+            }
+        ]
+    }
+]

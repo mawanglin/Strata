@@ -1,0 +1,15 @@
+#!/bin/bash
+# 文件装好之后：检查内置的 Node / Python 能跑，再应用向导里的设置。
+
+. "$(dirname "$0")/common"
+
+mkdir -p "${TRIM_PKGVAR}"
+fix_owner "${TRIM_PKGVAR}"
+
+( exec_as_app_user "${TRIM_APPDEST}/node/bin/node" --version ) >> "${LOG_FILE}" 2>&1 \
+    || fail "内置的 Node 无法运行，详见 ${LOG_FILE}"
+( exec_as_app_user "${TRIM_APPDEST}/control/python/bin/python3" -I -c 'import numpy, jinja2' ) >> "${LOG_FILE}" 2>&1 \
+    || fail "内置的 Python 无法运行，详见 ${LOG_FILE}"
+
+apply_wizard_settings
+exit 0

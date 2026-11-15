@@ -1,0 +1,113 @@
+#!/bin/bash
+# cmd/* 共用的函数。被 source，不直接执行。
+
+LAUNCH="${TRIM_APPDEST}/bin/launch.sh"
+LOG_FILE="${TRIM_PKGVAR}/strata.log"
+PID_FILE="${TRIM_PKGVAR}/strata.pid"
+SETTINGS_FILE="${TRIM_PKGVAR}/settings.env"
+AUTH_FILE="${TRIM_PKGVAR}/home/.auth.json"
+LOG_MAX_BYTES="${STRATA_LOG_MAX_BYTES:-$((10 * 1024 * 1024))}"
+LOG_KEEP=2                                          # 保留的历史日志：strata.log.1 … .N
+LOG_CHECK_SECONDS="${STRATA_LOG_CHECK_SECONDS:-60}"
+
+log_msg() {
+    echo "$(date '+%F %T') [cmd] $*" >> "${LOG_FILE}"
+}
+
+log_is_big() {
+    [ -f "${LOG_FILE}" ] && [ "$(stat -c %s "${LOG_FILE}")" -gt "${LOG_MAX_BYTES}" ]
+}
+
+# strata.log -> strata.log.1 -> strata.log.2 …，然后日志从空文件重新开始。
+# launch.sh 的标准输出是以追加方式（>>）重定向进日志的，所以可以原地清空，它会从头继续写。
+rotate_log() {
+    local i
+    for ((i = LOG_KEEP; i > 1; i--)); do
+        [ -f "${LOG_FILE}.$((i - 1))" ] && mv -f "${LOG_FILE}.$((i - 1))" "${LOG_FILE}.${i}"
+    done
+    cp -fp "${LOG_FILE}" "${LOG_FILE}.1" && : > "${LOG_FILE}"
+}
+
+# 应用运行期间在旁边守着（进程 $1 活着就一直在），避免日志无限增长。
+rotate_log_while_running() {
+    local pid="$1" waited=0
+    while kill -0 "${pid}" 2>/dev/null; do
+        sleep 1
+        waited=$((waited + 1))
+        [ "${waited}" -ge "${LOG_CHECK_SECONDS}" ] || continue
+        waited=0
+        if log_is_big; then
+            rotate_log
+            log_msg "log rotated (it was over ${LOG_MAX_BYTES} bytes; the previous one is strata.log.1)"
+        fi
+    done
+}
+
+# 生命周期脚本失败时飞牛显示给用户的消息。
+fail() {
+    log_msg "ERROR: $*"
+    [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "$*" > "${TRIM_TEMP_LOGFILE}"
+    exit 1
+}
+
+# 生命周期脚本可能以 root 运行；应用碰到的一切都必须属于应用用户（及 config/privilege 里
+# join-groups 给的附加组）。会替换调用它的（子）shell，所以只能在子 shell 里或作为最后一条命令用；
+# setpriv 也是 exec，所以 $! 保持准确。
+exec_as_app_user() {
+    if [ "$(id -u)" = "0" ] && [ -n "${TRIM_UID:-}" ]; then
+        exec setpriv --reuid="${TRIM_UID}" --regid="${TRIM_GID}" --init-groups -- "$@"
+    fi
+    exec "$@"
+}
+
+fix_owner() {
+    if [ "$(id -u)" = "0" ] && [ -n "${TRIM_UID:-}" ]; then
+        chown -R "${TRIM_UID}:${TRIM_GID}" "$@"
+    fi
+}
+
+# 校验向导的值并保存；输入了密码就存起来（bin/set-password.mjs）。
+# 网页端口没有飞牛登录保护，所以访问密码是必须的。
+apply_wizard_settings() {
+    local port="${wizard_port:-47831}"
+    local user="${wizard_username:-admin}"
+    local source="${wizard_source:-hf-mirror}"
+    local custom="${wizard_endpoint:-}"
+    local endpoint="" ms=""
+
+    [[ "${port}" =~ ^[0-9]+$ ]] && [ "${port}" -ge 1024 ] && [ "${port}" -le 65535 ] \
+        || fail "端口无效：${port}"
+    [[ "${user}" =~ ^[A-Za-z0-9_.-]{1,32}$ ]] || fail "用户名无效：${user}"
+    case "${source}" in
+        hf-mirror)   endpoint="https://hf-mirror.com" ;;
+        huggingface) endpoint="" ;;
+        modelscope)  ms="modelscope" ;;
+        custom)
+            [[ "${custom}" =~ ^https?://[A-Za-z0-9._:/-]+$ ]] \
+                || fail "自定义镜像地址无效（必须以 http:// 或 https:// 开头，只能含字母数字和 . _ : / -）：${custom}"
+            endpoint="${custom%/}" ;;
+        *) fail "模型下载源无效：${source}" ;;
+    esac
+
+    mkdir -p "${TRIM_PKGVAR}/home"
+    fix_owner "${TRIM_PKGVAR}"
+    if [ -n "${wizard_password:-}" ]; then
+        [ "${#wizard_password}" -ge 6 ] || fail "密码至少 6 位"
+        printf '%s\n' "${wizard_password}" \
+            | exec_as_app_user "${TRIM_APPDEST}/node/bin/node" "${TRIM_APPDEST}/bin/set-password.mjs" "${user}" "${AUTH_FILE}" \
+            >> "${LOG_FILE}" 2>&1 || fail "创建访问密码失败，详见 ${LOG_FILE}"
+        log_msg "access password set for user ${user}"
+    elif [ ! -s "${AUTH_FILE}" ]; then
+        fail "需要设置访问密码"
+    elif ! grep -q "\"user\": *\"${user}\"" "${AUTH_FILE}"; then
+        fail "修改用户名时需要同时输入新密码"
+    fi
+
+    {
+        echo "STRATA_FPK_PORT=${port}"
+        echo "STRATA_FPK_USER=${user}"
+        echo "STRATA_FPK_HF_ENDPOINT='${endpoint}'"
+        echo "STRATA_FPK_SOURCE='${ms}'"
+    } > "${SETTINGS_FILE}"
+    fix_owner "${TRIM_PKGVAR}"
+}

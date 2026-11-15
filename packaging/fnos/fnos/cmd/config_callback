@@ -1,0 +1,13 @@
+#!/bin/bash
+# 在应用设置里改了向导的内容：应用设置；正在运行就重启。
+
+. "$(dirname "$0")/common"
+
+apply_wizard_settings
+
+main="$(dirname "$0")/main"
+if "${main}" status; then
+    "${main}" stop
+    "${main}" start
+fi
+exit 0

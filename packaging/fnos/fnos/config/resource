@@ -1,0 +1,17 @@
+{
+    "port-config": {
+        "protocol-file": "@APPNAME@.sc"
+    },
+    "data-share": {
+        "shares": [
+            {
+                "name": "@SHARE@",
+                "permission": {
+                    "rw": [
+                        "@APPNAME@"
+                    ]
+                }
+            }
+        ]
+    }
+}

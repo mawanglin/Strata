@@ -1,0 +1,6 @@
+#!/bin/bash
+# 新文件已就位。设置、模型、聊天记录都保留在原处。
+
+. "$(dirname "$0")/common"
+fix_owner "${TRIM_PKGVAR}"
+exit 0

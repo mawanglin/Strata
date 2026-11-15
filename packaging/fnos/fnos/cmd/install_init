@@ -1,0 +1,6 @@
+#!/bin/bash
+# 新文件落盘之前：清掉上一个版本留下的运行时拷贝（引擎目录），安装/升级后宿主启动时会从 engine-bundle 重新放好。
+if [ -n "${TRIM_PKGVAR:-}" ] && [ -d "${TRIM_PKGVAR}/components" ]; then
+    rm -rf "${TRIM_PKGVAR:?}/components"
+fi
+exit 0

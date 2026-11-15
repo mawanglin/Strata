@@ -1,0 +1,13 @@
+appname               = @APPNAME@
+version               = 0.2.13
+display_name          = @DISPLAY_NAME@
+desc                  = @DESC@
+platform              = x86
+source                = thirdparty
+maintainer            = Cob
+distributor           = Cob
+desktop_uidir         = ui
+desktop_applaunchname = @APPNAME@.Application
+service_port          = @PORT@
+checkport             = false
+ctl_stop              = true

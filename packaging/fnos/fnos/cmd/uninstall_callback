@@ -1,0 +1,13 @@
+#!/bin/bash
+# 可选地删除应用数据（聊天记录、设置、引擎拷贝、访问密码）。共享文件夹里的模型永远不动。
+
+. "$(dirname "$0")/common"
+
+# 引擎拷贝不是用户数据，总是删。
+rm -rf "${TRIM_PKGVAR:?}/components" "${TRIM_PKGVAR:?}/hostlibs"
+
+if [ "${wizard_delete_data:-false}" = "true" ] && [ -n "${TRIM_PKGVAR}" ]; then
+    rm -rf "${TRIM_PKGVAR:?}/home" "${TRIM_PKGVAR:?}/install" "${SETTINGS_FILE}"
+    rm -f "${LOG_FILE}" "${LOG_FILE}".[0-9]*
+fi
+exit 0

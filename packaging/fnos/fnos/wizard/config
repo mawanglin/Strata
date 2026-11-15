@@ -1,0 +1,99 @@
+[
+    {
+        "stepTitle": "访问方式",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "Strata 自身没有登录功能，网页端口不经过飞牛登录，所以<b>必须设置访问密码</b>：任何能访问该端口的人都可以使用这台 NAS 上的显卡和模型。打开方式：点飞牛桌面上的 Strata 图标，或直接访问 <b>http://NAS-IP:端口</b>，登录用下面的用户名和密码。注意这是明文 HTTP，请只在可信的局域网里使用。模型存放在共享文件夹「@SHARE@」的 models 里（卸载应用不会删除）。"
+            },
+            {
+                "type": "text",
+                "field": "wizard_port",
+                "label": "网页访问端口",
+                "initValue": "@PORT@",
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请输入端口"
+                    },
+                    {
+                        "pattern": "^([1-9][0-9]{3,4})$",
+                        "message": "端口须为 1000-65535 的数字"
+                    }
+                ]
+            },
+            {
+                "type": "text",
+                "field": "wizard_username",
+                "label": "登录用户名",
+                "initValue": "admin",
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请输入用户名"
+                    },
+                    {
+                        "pattern": "^[A-Za-z0-9_.-]{1,32}$",
+                        "message": "仅限字母、数字、_ . -"
+                    }
+                ]
+            },
+            {
+                "type": "password",
+                "field": "wizard_password",
+                "label": "访问密码（留空则不修改）",
+                "rules": [
+                    {
+                        "min": 6,
+                        "message": "密码至少 6 位"
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "stepTitle": "模型下载源",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "模型有几十 GB，从 Hugging Face 官方站下载在国内通常很慢或连不上。默认使用镜像站 hf-mirror.com（文件与官方一致，固定版本的校验值仍会核对）；也可以改用 ModelScope（魔搭），或自己填一个镜像站地址。之后可以在应用设置里修改，修改后应用会自动重启。"
+            },
+            {
+                "type": "radio",
+                "field": "wizard_source",
+                "label": "下载源",
+                "initValue": "hf-mirror",
+                "options": [
+                    {
+                        "label": "Hugging Face 镜像站 hf-mirror.com（推荐，国内可直连）",
+                        "value": "hf-mirror"
+                    },
+                    {
+                        "label": "ModelScope 魔搭（国内；提供的是仓库的当前文件，不是 Strata 固定的版本）",
+                        "value": "modelscope"
+                    },
+                    {
+                        "label": "Hugging Face 官方站 huggingface.co",
+                        "value": "huggingface"
+                    },
+                    {
+                        "label": "自定义镜像站（填在下面）",
+                        "value": "custom"
+                    }
+                ]
+            },
+            {
+                "type": "text",
+                "field": "wizard_endpoint",
+                "label": "自定义镜像站地址（只在选了“自定义”时使用）",
+                "initValue": "",
+                "rules": [
+                    {
+                        "pattern": "^(https?://[A-Za-z0-9._:/-]+)?$",
+                        "message": "以 http:// 或 https:// 开头，不能有空格和特殊字符"
+                    }
+                ]
+            }
+        ]
+    }
+]

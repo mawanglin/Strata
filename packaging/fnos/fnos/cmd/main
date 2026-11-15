@@ -1,0 +1,67 @@
+#!/bin/bash
+# Strata 的 start | stop | status。
+
+. "$(dirname "$0")/common"
+
+# 停止时引擎要卸载模型、释放显存，给足时间再强杀。
+STOP_TIMEOUT=120
+
+is_running() {
+    [ -r "${PID_FILE}" ] || return 1
+    local pid
+    pid="$(tr -d '[:space:]' < "${PID_FILE}")"
+    [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null
+}
+
+start_process() {
+    is_running && return 0
+
+    log_is_big && rotate_log
+    log_msg "starting"
+    log_msg "authorized directories (TRIM_DATA_ACCESSIBLE_PATHS): ${TRIM_DATA_ACCESSIBLE_PATHS:-<none>}"
+    [ -r "${SETTINGS_FILE}" ] || fail "没有设置文件，请在应用设置里保存一次设置"
+    setsid bash -c '. "$0"; exec_as_app_user bash "${LAUNCH}"' "$(dirname "$0")/common" >> "${LOG_FILE}" 2>&1 < /dev/null &
+    local app_pid=$!
+    echo "${app_pid}" > "${PID_FILE}"
+    # 应用运行期间轮转日志（应用结束它也跟着结束）。
+    setsid bash -c '. "$0"; rotate_log_while_running "$1"' "$(dirname "$0")/common" "${app_pid}" > /dev/null 2>&1 < /dev/null &
+
+    sleep 2
+    is_running || fail "Strata 启动失败，详见 ${LOG_FILE}"
+}
+
+stop_process() {
+    is_running || { rm -f "${PID_FILE}"; return 0; }
+    local pid
+    pid="$(tr -d '[:space:]' < "${PID_FILE}")"
+    log_msg "stopping (pid ${pid})"
+
+    # launch.sh 是 setsid 出来的会话首进程：它收到 TERM 后会让宿主和反向代理一起干净退出。
+    kill -TERM "${pid}" 2>/dev/null
+
+    local count=0
+    while kill -0 "${pid}" 2>/dev/null && [ "${count}" -lt "${STOP_TIMEOUT}" ]; do
+        sleep 1
+        count=$((count + 1))
+    done
+    if kill -0 "${pid}" 2>/dev/null; then
+        log_msg "graceful stop timed out, killing the whole session"
+        kill -KILL -- "-${pid}" 2>/dev/null || kill -KILL "${pid}" 2>/dev/null
+    fi
+    rm -f "${PID_FILE}"
+}
+
+case "$1" in
+start)
+    start_process
+    ;;
+stop)
+    stop_process
+    ;;
+status)
+    is_running && exit 0 || exit 3
+    ;;
+*)
+    exit 1
+    ;;
+esac
