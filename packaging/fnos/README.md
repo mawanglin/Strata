@@ -253,9 +253,42 @@ sudo /var/apps/strata/target/bin/strata --help
 
 同一个 Coder 包在 RTX 3060（12 GB）上是 2.3–3.2 tok/s（见“已知问题”里 DeepSeek 一条）：MI50 显存大，放在卡上的专家多，所以更快。**想用 DeepSeek 选 Coder**；2.00 / 2.25 bpw 要把模型放到 NVMe 上才有可用的速度。
 
+**Coder 的专家全在显存和内存里时**（2026-11-16 复测）：加载时 NAS 有 80 GB 可用内存，引擎自动把显存放不下的 41.2 GB 专家全部复制进内存（`--mmap-experts auto`，18.7 秒），显存 25.2 GB，加载 49 秒。上一次加载时只有约 30 GB 空闲，它只拿了 13.6 GB 内存放专家，其余从机械硬盘现读。ZFS 的读缓存（ARC）会自己让出内存（32 GB 缩到 4 GB），不用改系统设置。
+
+| 测试（应用里，流式） | 结果 |
+|---|---|
+| 写 `is_prime` | 9.9 tok/s；再问一次 5.5 tok/s，都正确 |
+| 鸡兔同笼 | 4.9 tok/s，正确 |
+| LRU 缓存类（600 token） / 300 词说明（400 token） | 3.2 / 2.6 tok/s |
+| 读提示词 | 30–43 tok/s（上一次 4–7） |
+
+**慢在哪**：直接运行引擎（`strata-dsv41 --n 256`，提示词 17 token）加 `DS4_PROF=1`，三次 4.2–5.0 tok/s，每个 token 约 200 ms：
+
+| 阶段（GPU 上每个 token） | 时间 |
+|---|---|
+| attention（含等 Engram） | 144–154 ms |
+| 等 CPU 算专家 | 21–44 ms |
+| routing + 共享专家 | 11–13 ms |
+| 专家 gate/up、down 等 | 约 10 ms |
+
+- **Engram 表在机械硬盘上**：DeepSeek 的 n-gram 表是一个 110 GB 的文件（`deepseek-v4.1-flash-shared/DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf`，Coder 和 2.00 bpw 共用），内存放不下。每个 token 要随机读约 47 行，在 RAIDZ3 上 110–150 ms，其中约 100 ms 和计算重叠不上，只能等。Engram 用在第 1 层和第 14 层，等待落在这两层的 attention 阶段里，所以 attention 显得很慢（这一点是看代码推出来的，没有单独测）。短回答、重复的提问更快（9.9 tok/s），是因为那些行已经在缓存里了。
+- **专家计算不是瓶颈**：CPU 算一个专家 0.4 ms，每个 token 在 CPU 上的专家约 20%。
+- **上游的单卡解码加速帮不上**：它的作用是把 CPU 那部分专家经 PCIe 搬到 GPU 上算。在 MI50 上用环境变量强制打开（`DS4_STREAM=1 DS4_STREAM_WIN=1 DS4_LAND=1 DS4_STREAM_ZC=1 DS4_IQ1S_ROWS=1`），引擎能跑、不出错，但搬一个专家要 1.7–2.2 ms，比 CPU 自己算（0.4 ms）慢得多；引擎自己的对比是慢 5.9% 和 74%，然后自动不再搬。结果 4.43 tok/s，比不开（4.68）还慢一点。原因之一：**这台 NAS 的 MI50 插在走芯片组的 PCIe 4.0 x4 上**（根端口 `00:1b.0`），带宽只有 x16 的四分之一。
+- **逐个 GPU 函数的耗时**（`rocprofv3 --kernel-trace`，64 个 token，约 10 万次 GPU 函数调用）：GPU 占用率 98%，但每个 token 有 92 ms 是 `wait_seq_kernel` 在 GPU 上原地空转，等 CPU 算完它那份专家（这次运行时 NAS 可用内存只剩约 20 GB，部分专家又从机械硬盘读，所以等得比平时 21–44 ms 长）。真正在计算的 GPU 函数每个 token 约 44 ms，其中矩阵运算约 25 ms：
+
+  | GPU 函数 | 每个 token | 说明 |
+  |---|---|---|
+  | `mv_kernel<13>`（Q5_K 稠密矩阵乘） | 16.6 ms | attention 的 `wq_b` / `wo_a` / `wo_b` 等投影；5.3 GB 权重约合 300 GB/s，MI50 实际能到 700–800 GB/s |
+  | 专家 gate/up/down（IQ 格式） | 约 6 ms | |
+  | 其余几十个小函数 | 约 20 ms | 归一化、路由、稀疏注意力等 |
+
+  点积已经用的是 gfx906 的硬件指令（`v_dot4_i32_i8`，在 `include/strata/platform/hip_compat/strata_hip.h`）。MI50 没有矩阵核心（MFMA 从 MI100 才有），能优化的是用点积指令重写这些函数：Q5_K 矩阵乘有望提速到 2–2.5 倍，每个 token 省约 10 ms，整体只快 7–10%，本包没有做。等 CPU 和等 Engram 才是大头。
+- **和 Qwen3.8 差这么多，主要是模型结构**：DeepSeek 多一张 110 GB 的 Engram 表（每个 token 都要查），注意力更宽更复杂（64 头 × 512 维，加压缩缓存和稀疏索引），专家一共 66 GB，比 MI50 的显存大一倍。上游在自己推荐的环境（RTX 3060 + NVMe）里，DeepSeek 2.00 bpw 也只有 6–9 tok/s，而同一张卡跑 Qwen3.8 是 35–40 tok/s。**MI50 上日常请用 Qwen3.8**（Coder IQ1_M 约 60 tok/s，IQ3_XXS 约 40–47 tok/s）。
+- **能提速的办法**：把 110 GB 的 Engram 文件放到固态上（估计每个 token 能省约 100 ms，接近翻倍；没测）；把 MI50 换到 CPU 直连的 x16 槽（加载、读提示词更快，搬专家也可能变得划算；没测）；为 gfx906 优化 attention 内核（要改引擎，收益不确定）。
+
 **限制**：
 
-- 上游有一项单卡解码加速只给 NVIDIA（日志：`the one-GPU decode path ... off (not NVIDIA + one GPU)`）；DSpark 草稿在专家远多于显存时自己不加载（CUDA 版也一样）。
+- 上游有一项单卡解码加速只给 NVIDIA（日志：`the one-GPU decode path ... off (not NVIDIA + one GPU)`），在这台 NAS 上强制打开反而慢一点（见上面“慢在哪”）；DSpark 草稿在专家远多于显存时自己不加载（CUDA 版也一样）。
 - **非流式请求超过 5 分钟会失败**（`{"error":{"message":"fetch failed"}}`）：宿主转发 `/v1` 时等响应头最多 5 分钟，引擎其实还在出字。慢模型请用流式（`"stream": true`，Claude Code、Codex、OpenCode 和网页聊天都是流式）。这是上游宿主的行为，CUDA 版一样。
 - 没有测：DeepSeek 的读图、多张 gfx906 卡、MI60 / Radeon VII、长上下文。
 
