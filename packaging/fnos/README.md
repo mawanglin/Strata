@@ -170,8 +170,11 @@ sudo /var/apps/strata/target/bin/strata --help
 | **局域网共享**（网页“API 服务 → 局域网共享”） | ✅ CUDA 版：打开后监听宿主端口 + 1（这次是 18792），局域网不带 Key 401、带 Key 200，网页路径 404；关闭后端口关掉。gfx906 版的共享端口跟着它自己的宿主端口走。它绕过本包的认证代理，只认 Strata 的 API Key。 |
 | **自动调优**（网页里用户自己跑） | Coder IQ1_M：调完了，但没有生成可用的预设；它的基准：生成 27.9 tok/s、读入 37 tok/s（24 token 输入 / 200 输出，贪心，不思考）。DeepSeek 2.00bpw：两次都失败，“The operation was aborted due to timeout”（机械硬盘池太慢，见上面 DeepSeek 一条）。 |
 | **DFlash2 草稿模型**（Qwen3.8-Flash-Next） | ❌→已修：选 DFlash2 加载时退回 MTP，说明是 “There is no internet connection, so the DFlash2 drafter can't be downloaded now.”。原因：12 GB 的 3060 用不上调优版（上游只给“专家全在显存里”的卡），走的是原版 drafter，而它的下载地址写死了 `huggingface.co`，不认 `HF_ENDPOINT`；NAS 连不上 huggingface.co（5 秒无响应），hf-mirror.com 可以。`patches/control/0002-dflash2-hf-endpoint.patch` 让它按 `HF_ENDPOINT`（向导里的模型下载源）下载。修好后（cob.12）：从 hf-mirror.com 下载 1.2 GB 约 24 秒，打包 12 秒，连同加载共 121 秒。**RTX 3060 上 DFlash2 比 MTP 快**（上游把这张卡标为 “slower”，实测相反）：写 `is_prime` 4.2–6.4 秒（MTP 8.1 秒），引擎解码 58–67 tok/s；鸡兔同笼 3.6 秒（MTP 4.5 秒）；长文 1865 token 40 秒，平均约 46 tok/s（MTP 约 40 tok/s）。代价是只能一次一个请求（MTP 可以同时 2 个）。 |
-| **编程助手的工具、MCP、联网搜索** | ⚪ 用不了：网页提示 “The coding assistant isn't installed…”。这个组件（harness）不在上游的更新源里（只有 app、control、drafters、dsv41、engine），上游文档说它的仓库还没发布。不是本包的问题。 |
-| **Cloudflare 隧道** | ⚪ 故意没测：它会把服务公开到互联网，还要在运行时下载 `cloudflared`。要用的话自己在网页里开，并且一定要设 API Key。 |
+| **gfx906 上的 DFlash2**（2026-11-16，MI50，IQ3_XXS） | ✅ 能用，但**不比 MTP 快**：加载 85 秒（drafter 直接用共享模型库 `dflash2/` 里 CUDA 版下过的那份，没有重新下载，占 591 MiB 显存）；同样四个提示，DFlash2 / MTP：写 `is_prime` 44 / 45 tok/s，再问一次 51 / 52，鸡兔同笼 48 / 42（都答对），长文 37.5（2000 token）/ 44.3（1123 token）。DFlash2 只能一次一个请求，MTP 可以同时 2 个，**MI50 上保持默认的 MTP 就好**。 |
+| **聊天页的 MCP 工具** | ✅ 不需要 harness：模型设置里的“MCP 服务器”由引擎旁的 Python 服务（`serve/server.py`）启动和调用，聊天页打开工具开关（请求带 `"strata_mcp": true`）就能用。用一个自写的最小 stdio MCP 服务器（两个工具：`secret_word`、`add`）接到 CUDA 版的 IQ3_XXS 上：问“今天的密语是什么，用工具查”，模型调用 `fpktest__secret_word`，照实回答 `MAPLE-7731`，3.8 秒；“用 add 算 98765432 + 12345679”，带参数调用，回答 `111111111`，3.5 秒。MCP 服务器的日志确认两次调用都执行了。MCP 程序以应用用户运行，要放在应用读得到的地方。 |
+| **编程助手（agent 模式）、联网搜索、浏览器工具** | ⚪ 用不了：网页提示 “The coding assistant isn't installed…”。这个组件（harness）不在上游的更新源里（只有 app、control、drafters、dsv41、engine），上游文档说它的仓库还没发布。不是本包的问题。聊天页的 MCP 工具不受影响（上一行）。 |
+| **终端里完整的 `strata` 命令**（CUDA 版，`sudo /var/apps/strata/target/bin/strata …`） | ✅ `--version`、`doctor`、`components engines`、`models list`、`drafting plan`、`launch --plan` 都正常（认出 5 个已装模型、两个引擎，不需要下载）。`launch --family qwen --model iq3_xxs --vision off --access local --port 18580 --yes --no-tui`：76 秒起好服务，没有下载；之后 `launch --status`、`status`、`monitor --once`、`logs` 都看得到它，`connect opencode / claude-code / codex --check` 三个都 PASS（一个提示 + 一次工具调用），`bench run --suite serving-smoke` 通过（46–49 tok/s），`launch --stop` 停掉、显存清零。**注意：终端和应用共用同一份模型配置**：用 `strata launch` 换了选项（比如 `--vision off`）启动，会把应用里这个模型的设置一起改掉（这次读图设置和 `--vram-reserve-mib 1536` 被去掉了，已用自动备份的 `.bak` 恢复）。终端启动尽量和网页里的设置一致，或者先停用网页里的这个模型、用完核对一下。 |
+| **Cloudflare 隧道、Tailscale** | ⚪ 故意没测：Cloudflare 会把服务公开到互联网，还要在运行时下载 `cloudflared`；这台 NAS 用不上这两个。要用的话自己在网页里开，并且一定要设 API Key。 |
 | MI60 / Radeon VII、飞牛网页里的升级和卸载 | ⚪ 没有硬件 / 只能在网页里点，没测。 |
 
 ## gfx906 变体（AMD MI50 / MI60 / Radeon VII）
@@ -224,7 +227,7 @@ sudo /var/apps/strata/target/bin/strata --help
   | 4237 token 的长提示词 | 16.7 秒 | 正确回答 “OK” | 读入约 **436 tok/s** |
 
   和 Coder IQ1_M 比：生成慢一些（平均约 40 对 60 tok/s），但量化精度更高，适合日常聊天和推理；Coder 适合写代码。
-- **没有实测**：MI60 和 Radeon VII（同一指令集，没跑过）、多张 gfx906 卡、DFlash2 草稿模型。
+- **没有实测**：MI60 和 Radeon VII（同一指令集，没跑过）、多张 gfx906 卡。DFlash2 草稿模型能用，但不比 MTP 快（见“补测”）。
 
 ### gfx906 上的 DeepSeek V4.1（2026-11-16，本包移植，上游没有）
 
@@ -290,7 +293,7 @@ sudo /var/apps/strata/target/bin/strata --help
 
 - 上游有一项单卡解码加速只给 NVIDIA（日志：`the one-GPU decode path ... off (not NVIDIA + one GPU)`），在这台 NAS 上强制打开反而慢一点（见上面“慢在哪”）；DSpark 草稿在专家远多于显存时自己不加载（CUDA 版也一样）。
 - **非流式请求超过 5 分钟会失败**（`{"error":{"message":"fetch failed"}}`）：宿主转发 `/v1` 时等响应头最多 5 分钟，引擎其实还在出字。慢模型请用流式（`"stream": true`，Claude Code、Codex、OpenCode 和网页聊天都是流式）。这是上游宿主的行为，CUDA 版一样。
-- 没有测：DeepSeek 的读图、多张 gfx906 卡、MI60 / Radeon VII、长上下文。
+- 没有测（DeepSeek 在这台 NAS 上太慢，不再测）：DeepSeek 的读图、多张 gfx906 卡、MI60 / Radeon VII、长上下文。
 
 **和 ComfyUI（gfx906）共用一张卡**：Strata 加载模型后几乎占满 MI50 的显存，这时 ComfyUI 出图会显存不足；反过来也一样。两个不要同时用，或者在 Strata 里卸载模型（停止应用也行）。
 
