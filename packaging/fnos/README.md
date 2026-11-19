@@ -134,6 +134,9 @@ sudo /var/apps/strata/target/bin/strata --help
 
 ## 已知问题和注意事项
 
+- **两个应用打开后都显示 NVIDIA 的卡**（2026-11-19 发现，cob.14 / cob.13 修好）：有两个原因。
+  - **开机时端口冲突、留下孤儿进程**：两个变体的宿主都优先用内部端口 18791，飞牛开机时两个应用几乎同时启动，后起的宿主报 “Port 18791 is already in use” 起不来。`launch.sh` 有 `set -eu`，宿主出错退出时 `wait` 的非零返回值让整个脚本直接退出（本该有的自动重启也就没发生），已经启动的反向代理没人停，一直占着网页端口；再启动时新代理听不上，旧代理还在把请求转给 18791，也就是 **另一个应用的宿主**，于是 gfx906 版的网页打开的是 CUDA 版（11-18 的日志）。停止应用时也一样：`cleanup` 里 `wait` 宿主的退出码让脚本中途退出，代理留了下来（11-19 部署时又碰到一次）。现在：两个变体用不同的首选宿主端口（CUDA 18791，gfx906 18891）；宿主退出按设计自动重启；`launch.sh` 不管怎么退出都停掉代理和宿主（`trap … EXIT`），`cleanup` 里的 `wait` / `kill` 失败不再中断；网页端口听不上时直接启动失败（日志 `the web port … could not be opened`）；`cmd/main` 判定启动失败时把 launch.sh 的整组进程一起停掉。`tests/test_launch_lifecycle.sh` 覆盖这些情况。
+  - **Control 列出机器里所有的卡**：上游的 Control 报告所有显卡，另标 `engine_vendor`，模型计划只算引擎那一家的卡；但网页里“本机”之类的卡片按这个列表显示，两个应用都把 RTX 3060 排在第一。`patches/control/0003-gpu-vendor.patch` 让 Control 和宿主一样按 `STRATA_FPK_GPU_VENDOR` 只留本变体的卡：CUDA 版只有 RTX 3060，gfx906 版只有 MI50（NAS 上核对过两边的 `/api/native` 和 `/api/hardware`）。
 - **小显存卡的上下文：自动降档**（`patches/0003-q36-context-fallback.patch`，`STRATA_FPK_CONTEXT_FALLBACK=1`）。Qwen3.6 引擎把整个上下文（fp32 的 K/V）放在显存里，没有放到内存的选项（大内存用来放专家：64K 时 256 个专家全在内存里），所以上游“所有卡默认 128K”在 12 GB 卡上起不来。补丁让它在引擎日志说显存不够时把上下文减半重试（最低 16K），成功的值写回模型配置，下次直接从这里起；用户在模型设置里自己选过的上下文不改；只是“同时 2 个请求”放不下（单个放得下）时交给上游的“一次一个请求”处理，不降上下文。
   RTX 3060 12 GB 实测：128K ❌，96K ❌（放完上下文只剩 216 MiB，专家缓冲区要 1256 MiB），**64K ✅（约 29.7 tok/s）**，32K ✅（约 36 tok/s）。连续三次加载：第 1 次 128K → 自动 64K 并记住，第 2、3 次直接 64K。
 - **卸载必须在飞牛网页里做**（`appcenter-cli uninstall` 会拒绝）；`appcenter-cli install-fpk` 对已安装的同名应用会直接跳过，**升级也要在网页里做**。所以“升级路径”和“卸载向导”**没有实测**。
@@ -202,6 +205,7 @@ sudo /var/apps/strata/target/bin/strata --help
 | `patches/0003-q36-context-fallback.patch` | 宿主 | Qwen3.6 显存不够时自动降上下文并记住（两个变体共用；gfx906 不跑 Qwen3.6，不会触发） |
 | `patches/0004-engine-port-base.patch` | 宿主 | 引擎端口从 `STRATA_FPK_ENGINE_PORT_BASE` 起找（CUDA 18500，gfx906 18600），两个应用同时加载不再抢同一个端口（两个变体共用） |
 | `patches/control/0002-dflash2-hf-endpoint.patch` | Control | DFlash2 草稿模型按 `HF_ENDPOINT` 下载（默认 hf-mirror.com），不再写死 huggingface.co（两个变体共用） |
+| `patches/control/0003-gpu-vendor.patch` | Control | Control 的显卡列表也只留本变体厂商的卡（和宿主的 0001 一样），网页上不再把另一家的卡排在第一（两个变体共用） |
 
 `launch.sh` 按 `bin/variant.env`（构建时写入）设置：gfx906 版 `STRATA_FPK_GPU_VENDOR=amd`、`STRATA_ENGINE_BACKEND=hip`、`STRATA_EXPERIMENTAL_GFX906=1`，不链接任何宿主机的库。
 
@@ -320,6 +324,8 @@ packaging/fnos/tests/test_context_fallback.sh  # Qwen3.6 上下文自动降档�
 packaging/fnos/tests/test_models_dir.sh        # 模型目录的选择（授权目录），8 项
 packaging/fnos/tests/test_port_and_drafter.sh  # 两个应用的引擎端口段、DFlash2 按 HF_ENDPOINT 下载，7 项
 packaging/fnos/tests/test_launch_engine.sh     # 升级时替换内容变了的同版本引擎组件、gfx906 的 STRATA_DSV41_EXE，7 项
+packaging/fnos/tests/test_launch_lifecycle.sh  # 两个变体的宿主端口、宿主退出自动重启、停止和启动失败时不留代理 / 宿主，11 项
+packaging/fnos/tests/test_gpu_vendor_control.sh # Control 的显卡列表只留本变体厂商的卡，5 项
 # 都不需要 GPU / 飞牛
 ```
 
@@ -329,7 +335,7 @@ packaging/fnos/tests/test_launch_engine.sh     # 升级时替换内容变了的�
 build.sh                  构建脚本（VARIANT=cuda|gfx906）
 tools/make_icon.py        两个变体的应用图标（厂商色 + 厂商名）
 gfx906/                   gfx906 引擎的构建：build-engine-docker.sh（宿主侧）、build-engine.sh（容器里）、patches/（引擎源码补丁）
-patches/                  宿主补丁（0001-gpu-vendor、0002-no-online-updates、0003-q36-context-fallback、0004-engine-port-base）；patches/control/ 是 Control 的补丁（0001-gfx906-opt-in-and-backend、0002-dflash2-hf-endpoint）
+patches/                  宿主补丁（0001-gpu-vendor、0002-no-online-updates、0003-q36-context-fallback、0004-engine-port-base）；patches/control/ 是 Control 的补丁（0001-gfx906-opt-in-and-backend、0002-dflash2-hf-endpoint、0003-gpu-vendor）
 fnos/                     fpk 骨架（@APPNAME@ 等占位符由 build.sh 替换）
 ├── manifest, config/     应用清单；privilege（应用用户 strata + video/render 组）、resource（共享文件夹、防火墙）
 ├── cmd/                  生命周期脚本（start/stop/status、安装/配置/升级/卸载回调）

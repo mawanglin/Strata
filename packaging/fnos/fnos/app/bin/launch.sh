@@ -185,8 +185,11 @@ if [ "${1:-}" = "exec" ]; then
 fi
 
 # ---- 端口 ----------------------------------------------------------------------
-# 宿主只听回环地址；对外只有反向代理（带认证）。内部端口优先用固定的 18791（浏览器里的聊天记录等
+# 宿主只听回环地址；对外只有反向代理（带认证）。内部端口优先用固定的端口（浏览器里的聊天记录等
 # 按来源存储，宿主端口变了不影响，因为用户访问的是代理端口），被占用才退回系统给的。
+# 两个变体各用一个（CUDA 18791，gfx906 18891）：飞牛开机时两个应用几乎同时启动，用同一个首选端口时
+# 两边都先看到它空着，后起的宿主报 “Port 18791 is already in use” 起不来（2026-11-18 实测）。
+# 局域网共享另开“宿主端口 + 1”，所以两个首选端口隔开 100。
 pick_free_port() {
     "${NODE}" -e '
 const net = require("node:net");
@@ -198,7 +201,8 @@ const try_ = (ports) => {
 };
 try_([Number(process.argv[1]) || 0, 0]);' "$1"
 }
-BACKEND_PORT="$(pick_free_port 18791)"
+if [ "${STRATA_FPK_VARIANT}" = gfx906 ]; then HOST_PORT_PREFERRED=18891; else HOST_PORT_PREFERRED=18791; fi
+BACKEND_PORT="$(pick_free_port "${HOST_PORT_PREFERRED}")"
 
 CHILD_PIDS=()
 HOST_PID=""
@@ -206,18 +210,28 @@ SLEEP_PID=""
 EXIT_CODE=0
 cleanup() {
     log "shutting down"
-    [ -n "${SLEEP_PID}" ] && kill "${SLEEP_PID}" 2>/dev/null
+    [ -z "${SLEEP_PID}" ] || kill "${SLEEP_PID}" 2>/dev/null || true
     # 宿主收到 TERM 会先停掉它启动的引擎、卸载模型，再退出。
     if [ -n "${HOST_PID}" ]; then
         kill -TERM "${HOST_PID}" 2>/dev/null
-        wait "${HOST_PID}" 2>/dev/null
+        wait "${HOST_PID}" 2>/dev/null || true   # （set -e：宿主被 TERM 后的退出码不能让这里中途退出，代理还没停）
+        HOST_PID=""
     fi
-    [ "${#CHILD_PIDS[@]}" -gt 0 ] && kill -TERM "${CHILD_PIDS[@]}" 2>/dev/null
-    wait 2>/dev/null
+    # （set -e：要停的进程已经不在时 kill 会失败，不能因此中途退出、丢掉退出码）
+    [ "${#CHILD_PIDS[@]}" -eq 0 ] || kill -TERM "${CHILD_PIDS[@]}" 2>/dev/null || true
+    wait 2>/dev/null || true
     exit "${EXIT_CODE}"
 }
 # 被飞牛要求停止是正常退出，不管宿主上一次的退出码是什么。
 trap 'EXIT_CODE=0; cleanup' TERM INT
+# 不管因为什么退出（包括 set -e 下某条命令失败），都不留下反向代理和宿主：留下的代理会一直占着网页端口，
+# 下次启动的代理听不上，旧代理还把请求转给这个内部端口上的别的程序（曾经把 gfx906 版的网页转到了 CUDA 版）。
+stop_children() {
+    [ -z "${HOST_PID}" ] || kill -TERM "${HOST_PID}" 2>/dev/null || true
+    [ "${#CHILD_PIDS[@]}" -eq 0 ] || kill -TERM "${CHILD_PIDS[@]}" 2>/dev/null || true
+    return 0
+}
+trap stop_children EXIT
 
 # 反向代理：网页端口 0.0.0.0:${PORT}，Basic Auth，转发到宿主。
 # 旧版本在飞牛设置里存过一个 API Key（只有哈希）：现在 /v1 只认 Strata 自己的 Key（网页“API 服务 → API 密钥”），旧的不再用。
@@ -233,8 +247,15 @@ PROXY_PORT="${PORT}" PROXY_UPSTREAM_PORT="${BACKEND_PORT}" PROXY_AUTH_FILE="${HO
     PROXY_TLS="${STRATA_FPK_HTTPS:-off}" PROXY_TLS_DIR="${HOME_DIR}/tls" PROXY_TLS_USER_DIR="${SHARE}/tls" \
     PROXY_HOST_STATE="${STRATA_HOME}/data/state.json" \
     "${NODE}" "${APPDEST}/bin/proxy.mjs" &
-CHILD_PIDS+=($!)
+PROXY_PID=$!
+CHILD_PIDS+=("${PROXY_PID}")
 log "web port ${PORT} -> Strata host 127.0.0.1:${BACKEND_PORT}"
+# 网页端口听不上（被占用）时代理会自己退出；这时应用开着也打不开，干脆启动失败，让飞牛显示出来。
+sleep "${STRATA_PROXY_CHECK_S:-1}"
+if ! kill -0 "${PROXY_PID}" 2>/dev/null; then
+    log "ERROR: the web port ${PORT} could not be opened (see the [proxy] line above); is another program using it?"
+    exit 1
+fi
 
 # 宿主意外退出（内存不足被杀、崩溃……）时重启：${MAX_RESTARTS} 次 / ${RESTART_WINDOW} 秒，间隔递增；
 # 超过就放弃并停止应用，避免起不来的东西无限循环。被要求停止（TERM）不会重启。
@@ -260,8 +281,9 @@ while :; do
             exec "${NODE}" "${APPDEST}/host/server/index.mjs"
     ) &
     HOST_PID=$!
-    wait "${HOST_PID}"
-    EXIT_CODE=$?
+    # （set -e 下宿主退出码非零时，单独的 wait 会让整个脚本直接退出，下面的自动重启就不会发生）
+    EXIT_CODE=0
+    wait "${HOST_PID}" || EXIT_CODE=$?
     HOST_PID=""
 
     now="$(date +%s)"
@@ -279,6 +301,6 @@ while :; do
     log "the host exited ($(describe_exit "${EXIT_CODE}")); restarting in ${delay} s (${#exit_times[@]} of ${MAX_RESTARTS} allowed within ${RESTART_WINDOW} s)"
     sleep "${delay}" &
     SLEEP_PID=$!
-    wait "${SLEEP_PID}"
+    wait "${SLEEP_PID}" || true
     SLEEP_PID=""
 done

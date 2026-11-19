@@ -1,0 +1,15 @@
+--- a/tools/strata_mcp.py
++++ b/tools/strata_mcp.py
+@@ -1031,6 +1031,12 @@
+             except Exception:                           # noqa: BLE001 - an older Control folder without it: the report is what it was
+                 arc = []
+         hw["gpus"] = nv + amd + arc
++        # fnOS package: it carries one engine (CUDA or AMD gfx906), and STRATA_FPK_GPU_VENDOR=nvidia|amd keeps only that make's cards here
++        # too, as the host's server/hardware.mjs does: the other make's card in the same box (the RTX 3060 beside an MI50) is then not listed
++        # first on this app's pages, and nothing is planned for it.  When the box has no card of that make, the report is unchanged.
++        fpk_vendor = os.environ.get("STRATA_FPK_GPU_VENDOR", "").strip().lower()
++        if fpk_vendor and any(g.get("vendor") == fpk_vendor for g in hw["gpus"]):
++            hw["gpus"] = [g for g in hw["gpus"] if g.get("vendor") == fpk_vendor]
+         for g in hw["gpus"]:                            # each make numbers its cards from 0 (the engine drives one make): a stable id tells two cards apart
+             g.setdefault("id", f"{g.get('vendor') or 'gpu'}:{g.get('index')}")
+         try:                                            # how fast each card is (SMs x clock): the app and the Terminal pick the Main card by it

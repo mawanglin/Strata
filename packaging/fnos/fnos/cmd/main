@@ -27,7 +27,13 @@ start_process() {
     setsid bash -c '. "$0"; rotate_log_while_running "$1"' "$(dirname "$0")/common" "${app_pid}" > /dev/null 2>&1 < /dev/null &
 
     sleep 2
-    is_running || fail "Strata 启动失败，详见 ${LOG_FILE}"
+    if ! is_running; then
+        # launch.sh 已经退出：它是 setsid 出来的会话首进程，进程组号就是它的 pid。组里如果还剩下它启动的
+        # 进程（比如反向代理），一起停掉，免得一直占着网页端口。
+        kill -TERM -- "-${app_pid}" 2>/dev/null
+        rm -f "${PID_FILE}"
+        fail "Strata 启动失败，详见 ${LOG_FILE}"
+    fi
 }
 
 stop_process() {
